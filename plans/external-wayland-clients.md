@@ -1,5 +1,11 @@
 # External Wayland clients over Binder fd passing
 
+> **Status:** app side implemented (AIDL + `ExternalWaylandService` + manifest +
+> `nativeAdoptClientFd` + `event_loop` source + `aidl = true`). Termux-side
+> `wayland-run` helper and on-device verification are still pending. See
+> [../notes/android.md](../notes/android.md) ("Wayland Socket Sharing") for the
+> as-built summary.
+
 ## Goal
 
 Let a Wayland client running under Termux's uid (10549) render into
@@ -449,7 +455,15 @@ CLASSPATH=$PREFIX/libexec/wayland-bridge/wayland-bridge.apk \
   restart recreates the channel and drains the queue. A send that loses
   the race with teardown just closes that client.
 - **No permission on the service.** The uid allowlist is the gate.
-  Tighten it before shipping outside a dev build.
+  Tighten it before shipping outside a dev build. Because Android 11+
+  filters `getPackagesForUid` by package visibility, the manifest declares
+  `<queries>` for `com.termux` (and `com.android.shell` for the debug
+  path); without it the allowlist silently denies everyone.
+- **`onCreate` does the one-time asset extraction on the main thread.**
+  `ensureActivation` (xkb, libhybris, Xwayland) can take seconds on the
+  first bind in a fresh process. Kept synchronous so the first
+  `openClient()` cannot race the `TAWC_*` env; move to an async warm-up if
+  this becomes a shipping path.
 - **`WAYLAND_SOCKET` is invisible to `WAYLAND_DISPLAY`.** A client that
   passes an explicit socket name will ignore it.
 - **Root shortcut.** With root, tawc's existing chroot path already

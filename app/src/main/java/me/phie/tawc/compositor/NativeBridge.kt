@@ -154,6 +154,11 @@ object NativeBridge {
      *  Idempotent. Needs the `TAWC_*` env. */
     external fun nativeStartActivation(xwayland: Boolean)
 
+    /** Adopt one end of a client socketpair (Binder fd passing). The fd is
+     *  owned by native after this call. False only if it could not be
+     *  queued (too many pending, or the compositor is gone). */
+    external fun nativeAdoptClientFd(fd: Int): Boolean
+
     /** Debug builds (`compositor-hold`): keep a clientless compositor up. */
     external fun nativeSetCompositorHold(hold: Boolean)
 

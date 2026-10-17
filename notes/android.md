@@ -9,12 +9,30 @@ This is the current development approach.
 **Without root (proot, future goal):** SELinux blocks cross-app `connect()` between
 `untrusted_app` domains on Android 9+. Two viable solutions:
 
-1. **Binder fd passing (preferred):** Compositor creates a `socketpair()`, passes one end
-   to Termux via a ContentProvider or bound Service as a `ParcelFileDescriptor`. No
-   `connect()` syscall occurs, so SELinux is never triggered.
+1. **Binder fd passing (implemented, app side):** the exported
+   [ExternalWaylandService](../app/src/main/java/me/phie/tawc/compositor/ExternalWaylandService.kt)
+   returns one end of a fresh `socketpair()` as a `ParcelFileDescriptor` over
+   the `IExternalWayland` AIDL; the near end is adopted by the compositor
+   through `NativeBridge.nativeAdoptClientFd`, which hands it to the same
+   `insert_client` path the in-container clients use. No `connect()` syscall
+   occurs, so neither SELinux nor `/data/data/<pkg>` DAC traversal applies.
+   Access is gated by a uid allowlist (`com.termux`, plus
+   `com.android.shell` in debug) rather than a manifest permission, because
+   the Termux-side caller is an `app_process` process with no package. That
+   lookup needs `<queries>` entries in the manifest (Android 11+ package
+   visibility) — without them `getPackagesForUid` denies everyone. The
+   client must be launched with `WAYLAND_SOCKET=<fd>` (libwayland checks it
+   before `WAYLAND_DISPLAY`); one fd per client, no relay. Details and the
+   not-yet-written Termux-side `wayland-run` helper:
+   [../plans/external-wayland-clients.md](../plans/external-wayland-clients.md).
 
 2. **Shared UID:** `sharedUserId="com.termux"` makes both apps run as same UID/SELinux
    domain. Deprecated since API 33 but still functional. Limits distribution flexibility.
+
+Trade-offs on the Binder path: `SO_PEERCRED` on an app-created socketpair reports
+TAWC itself, so uid-based policy cannot be derived from the stream; and the
+compositor only speaks `wl_shm`/`android_wlegl`, so GL/Vulkan Termux clients fall
+back to software rendering (see [gpu-strategy.md](gpu-strategy.md)).
 
 ## Chroot Setup
 

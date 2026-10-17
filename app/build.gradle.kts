@@ -227,6 +227,7 @@ android {
     // in InstallationService); off by default in AGP 8.
     buildFeatures {
         buildConfig = true
+        aidl = true
     }
 
     compileOptions {

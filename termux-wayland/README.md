@@ -17,54 +17,72 @@ the borrowed package name.
 
 `startService` is the exception: `ActiveServices.startServiceLocked`
 treats a `null` caller as foreground, which is exactly how Termux's own
-`am` command works. So `wayland-run` creates a socketpair itself, hands
-one end to the app **as an `Intent` extra** (a `ParcelFileDescriptor`),
-and runs the client on the other end via `WAYLAND_SOCKET`.
+`am` command works.
+
+An `Intent` still cannot carry the fd: `ActivityManagerService.startService`
+rejects any intent for which `Intent.hasFileDescriptors()` is true
+(`IllegalArgumentException: File descriptors passed in Intent`). A
+`Binder` is not a file descriptor, so the intent carries a **Binder
+token** instead. The app then calls the existing
+`IExternalWayland.openClient()` on that token. That is an ordinary
+synchronous Binder call, and *it* can carry a `ParcelFileDescriptor`:
+the launcher creates the socketpair in `openClient()`, returns the
+compositor end to the app, and keeps the client end for the child.
+
+`app_process` starts its Binder thread pool in `AppRuntime.onStarted()`
+before invoking `main()`, so the launcher can receive that call while its
+main thread waits.
 
 ```
-Termux (wayland-run)                          TAWC app
-────────────────────                          ────────
-socketpair() ── app end ──┐
-                          │  startService(Intent{EXTRA_CLIENT_FD})
-                          └────────────────▶ ExternalWaylandService
-                                               onStartCommand()
-                                                 detachFd()
-                                                 nativeAdoptClientFd()
-client end ◀──────────────┘                           │
-WAYLAND_SOCKET=fd  ─────────────────────────────▶ insert_client()
-   exec(wayland client)
+Termux (wayland-run)                                TAWC app
+────────────────────                                ────────
+Bundle{host binder} ── startService(Intent) ──▶ ExternalWaylandService
+     ▲                                            onStartCommand()
+     │                                              reads host binder
+     │  openClient()  ◀──────────────────────────────┘
+     │  (synchronous Binder call; socketpair created here)
+     ├── returns compositor end ─────────────────▶ detachFd()
+     │                                             nativeAdoptClientFd()
+     └── keeps client end
+WAYLAND_SOCKET=fd ──▶ exec(client)                 insert_client()
 ```
 
 ### Why it is a DEX, not a shell script or a C binary
 
-The fd has to arrive inside an Android `Intent`. There is no fd-carrying
-`am` flag, and every AMS call a non-app caller is allowed to make
-(`startActivity`, `startService`, `broadcastIntent`) takes an `Intent`.
-Building that `Intent` Parcel in a lower-level language means
-reimplementing `Intent`'s private wire format (`Intent.writeToParcel` +
-`Bundle` + `ParcelFileDescriptor`), pinned to one Android version. So the
-launcher is JVM bytecode run by `app_process` — Java or Kotlin, it makes
-no difference — and the compile-only stubs keep the build to a JDK plus
+The handshake has to travel through Android's `Intent`/`Bundle` and a
+Binder callback. There is no fd-carrying `am` flag, and building that
+wire format in a lower-level language means reimplementing `Intent`'s
+private parcel format, pinned to one Android version. So the launcher is
+JVM bytecode run by `app_process` — Java or Kotlin, it makes no
+difference — and the compile-only stubs keep the build to a JDK plus
 `d8`.
 
 ## Required app change
 
-`ExternalWaylandService.onBind`/AIDL is unreachable from Termux and can
-be dropped or kept. What the launcher needs is an `onStartCommand` that
-consumes the fd (the plan's `nativeAdoptClientFd` JNI is reused as-is):
+`ExternalWaylandService.onBind`/AIDL cannot be reached from Termux (no
+bind), but `onStartCommand` can. It reads the host binder and calls the
+same `openClient()` from the app side (the plan's
+`nativeAdoptClientFd` JNI is reused as-is):
 
 ```kotlin
 companion object {
-    const val EXTRA_CLIENT_FD = "me.phie.tawc.extra.CLIENT_FD"
+    const val EXTRA_HOST = "me.phie.tawc.extra.HOST"
+    const val KEY_HOST = "host"
 }
 
 override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    @Suppress("DEPRECATION")
-    val pfd = intent?.getParcelableExtra<ParcelFileDescriptor>(EXTRA_CLIENT_FD)
-    if (pfd != null) {
-        NativeBridge.nativeAdoptClientFd(pfd.detachFd())
+    val host = intent?.getBundleExtra(EXTRA_HOST)?.getBinder(KEY_HOST)
+    if (host != null) {
+        try {
+            val pfd = IExternalWayland.Stub.asInterface(host).openClient()
+            if (pfd != null) {
+                NativeBridge.nativeAdoptClientFd(pfd.detachFd())
+            }
+        } catch (e: Exception) {
+            Log.w("tawc", "external Wayland: host callback failed", e)
+        }
     } else {
-        Log.w("tawc", "ExternalWaylandService started without $EXTRA_CLIENT_FD")
+        Log.w("tawc", "ExternalWaylandService started without $EXTRA_HOST")
     }
     stopSelf(startId)
     return START_NOT_STICKY
@@ -72,7 +90,7 @@ override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 ```
 
 `stopSelf` is important: the service must not stay started. Return
-`START_NOT_STICKY` so a process death does not replay a dead fd.
+`START_NOT_STICKY` so a process death does not replay a dead handshake.
 
 ## Build and run
 
@@ -111,12 +129,14 @@ Only `src/` classes are dexed; the stubs are a compile-only classpath.
 ## Notes and limits
 
 - One client per `wayland-run`; `WAYLAND_SOCKET` is single-shot.
-- `onStartCommand` cannot see the original caller uid: the fd is
+- `onStartCommand` cannot see the original caller uid: the start is
   delivered by AMS, so `Binder.getCallingUid()` is TAWC itself. Any app
   can therefore start the exported service and get a compositor
   connection. Acceptable for a dev feature; a manifest permission would
   only help callers that have a manifest, which `app_process` does not.
 - The client must connect with `wl_display_connect(NULL)` so
   `libwayland-client` honours `WAYLAND_SOCKET`.
-- The app end of the socketpair is dup'd by Binder on delivery; the
-  launcher closes its copy after `startService` returns.
+- The compositor end is dup'd into the Binder reply; the launcher closes
+  its copy and the app detaches its copy into native. When the client
+  exits, the launcher's copy is already closed, so the compositor sees
+  EOF.

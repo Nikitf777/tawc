@@ -19,9 +19,11 @@ import me.phie.tawc.BuildConfig
  * [NativeBridge.nativeAdoptClientFd]. No `connect()` ever happens, so
  * neither check applies.
  *
- * Access is gated in [callerAllowed], not by a manifest permission: the
- * Termux-side helper is an `app_process` process with no package, so it
- * cannot be granted one.
+ * The AIDL path is gated in [callerAllowed], not by a manifest
+ * permission: the Termux-side helper is an `app_process` process with no
+ * package, so it cannot be granted one. The Termux launcher uses
+ * [onStartCommand] instead (it cannot bind), which AMS delivers without
+ * the original caller identity; see the note there.
  */
 class ExternalWaylandService : Service() {
 
@@ -64,21 +66,27 @@ class ExternalWaylandService : Service() {
     /**
      * Termux's `wayland-run` cannot bindService: it is an `app_process`
      * process, and AMS rejects binds from callers without a process
-     * record. It therefore starts this service with one end of a
-     * socketpair in [EXTRA_CLIENT_FD]. By the time this runs the binder
-     * caller is AMS, so `callerAllowed()` cannot gate it.
+     * record. It starts this service with a Binder token instead, then
+     * calls the existing `IExternalWayland.openClient()` on it. That
+     * synchronous Binder call is what carries the fd; an Intent cannot
+     * (AMS rejects `startService` intents with file descriptors).
+     *
+     * By the time this runs the binder caller is AMS, so
+     * `callerAllowed()` cannot gate it.
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        @Suppress("DEPRECATION")
-        val pfd = intent?.getParcelableExtra<ParcelFileDescriptor>(EXTRA_CLIENT_FD)
-        if (pfd != null) {
-            // Native owns the fd after detachFd(), including the failure
-            // paths, so do not close it here.
-            if (!NativeBridge.nativeAdoptClientFd(pfd.detachFd())) {
-                Log.w(TAG, "external Wayland: compositor refused the client fd")
+        val host = intent?.getBundleExtra(EXTRA_HOST)?.getBinder(KEY_HOST)
+        if (host != null) {
+            try {
+                val pfd = IExternalWayland.Stub.asInterface(host).openClient()
+                if (pfd != null && !NativeBridge.nativeAdoptClientFd(pfd.detachFd())) {
+                    Log.w(TAG, "external Wayland: compositor refused the client fd")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "external Wayland: host callback failed", e)
             }
         } else {
-            Log.w(TAG, "external Wayland: startService without $EXTRA_CLIENT_FD")
+            Log.w(TAG, "external Wayland: startService without host binder")
         }
         stopSelf(startId)
         return START_NOT_STICKY
@@ -98,7 +106,8 @@ class ExternalWaylandService : Service() {
     companion object {
         private const val TAG = "tawc"
 
-        /** Intent extra carrying the client's ParcelFileDescriptor. */
-        const val EXTRA_CLIENT_FD = "me.phie.tawc.extra.CLIENT_FD"
+        /** Matches WaylandRun's EXTRA_HOST / KEY_HOST. */
+        const val EXTRA_HOST = "me.phie.tawc.extra.HOST"
+        const val KEY_HOST = "host"
     }
 }

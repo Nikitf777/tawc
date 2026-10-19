@@ -47,6 +47,15 @@ the fd is safe with a second, one-way transaction
 The signal is sent after `openClient()` has returned, so the fd reply
 was already delivered and cannot be cut off mid-transaction.
 
+When TAWC's access policy refuses the caller, the app sends a third
+one-way transaction (`TRANSACTION_CLIENT_REFUSED`) carrying the reason,
+*ahead* of the adopted signal. The launcher prints that reason and exits
+non-zero instead of `execve`ing a client that would only fail to connect.
+Both signals count the same latch down, so the reason is never read
+before it is written. The adopted signal still follows, because an older
+app never sends a refusal and an older launcher would otherwise wait out
+its whole timeout.
+
 ```
 Termux (wayland-run)                                TAWC app
 ────────────────────                                ────────
@@ -57,6 +66,7 @@ Bundle{host binder} ── startService(Intent) ──▶ ExternalWaylandService
      │  (synchronous Binder call; socketpair created here)
      ├── returns compositor end ─────────────────▶ detachFd()
      │                                             nativeAdoptClientFd()
+     │  clientRefused(reason)  ◀───────────────────────┘  (only if denied)
      │  clientAdopted()  ◀─────────────────────────────┘
      │  (one-way; fd reply already delivered)
      └── keeps client end
@@ -84,8 +94,9 @@ JNI is reused as-is), then sends the one-way adopted signal:
 companion object {
     const val EXTRA_HOST = "me.phie.tawc.extra.HOST"
     const val KEY_HOST = "host"
-    // WaylandRun's TRANSACTION_CLIENT_ADOPTED (openClient is 1).
+    // WaylandRun's TRANSACTION_CLIENT_ADOPTED / _REFUSED (openClient is 1).
     const val TRANSACTION_CLIENT_ADOPTED = 2
+    const val TRANSACTION_CLIENT_REFUSED = 3
 }
 
 override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -115,6 +126,9 @@ override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     return START_NOT_STICKY
 }
 ```
+
+(As built, the refusal path sends `TRANSACTION_CLIENT_REFUSED` with the
+reason string before that `finally` block.)
 
 `stopSelf` is important: the service must not stay started. Return
 `START_NOT_STICKY` so a process death does not replay a dead handshake.
@@ -156,11 +170,14 @@ Only `src/` classes are dexed; the stubs are a compile-only classpath.
 ## Notes and limits
 
 - One client per `wayland-run`; `WAYLAND_SOCKET` is single-shot.
+- A refused caller gets `wayland-run: TAWC refused to connect this app:
+  <reason>` and exit code 1; nothing is `execve`d.
 - `onStartCommand` cannot see the original caller uid: the start is
-  delivered by AMS, so `Binder.getCallingUid()` is TAWC itself. Any app
-  can therefore start the exported service and get a compositor
-  connection. Acceptable for a dev feature; a manifest permission would
-  only help callers that have a manifest, which `app_process` does not.
+  delivered by AMS, so `Binder.getCallingUid()` is TAWC itself. The app
+  therefore authenticates the handshake with `SO_PEERCRED` on the
+  socketpair *this launcher* creates, which reports the launcher's real
+  uid. TAWC's Settings → External apps policy (Disabled / Allowed apps
+  only / Any app) applies to both that path and the `bindService` path.
 - The client must connect with `wl_display_connect(NULL)` so
   `libwayland-client` honours `WAYLAND_SOCKET`.
 - `execve` does not search `PATH`, so the launcher resolves the command

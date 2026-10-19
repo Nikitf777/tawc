@@ -13,4 +13,8 @@ public class Parcel {
 
     public void writeInt(int value) {
     }
+
+    public String readString() {
+        return null;
+    }
 }

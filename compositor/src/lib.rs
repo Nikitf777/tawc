@@ -419,6 +419,43 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeAdoptClie
     1
 }
 
+/// Read the peer uid of a connected Unix socket fd, or -1 if the kernel
+/// will not report it. Used by `ExternalWaylandService` to authenticate
+/// the `startService` path, where AMS delivers the start and
+/// `Binder.getCallingUid()` is TAWC itself.
+///
+/// A socketpair's peer credentials are the credentials of the process
+/// that created the pair, so the Termux launcher — which creates it in
+/// its own process — is reported correctly even though the later Binder
+/// transaction comes from AMS.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativePeerUid(
+    _env: JNIEnv,
+    _class: JClass,
+    fd: jint,
+) -> jint {
+    if fd < 0 {
+        return -1;
+    }
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `fd` is borrowed, not consumed; `cred`/`len` are valid
+    // out-parameters of the sizes getsockopt expects.
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut cred as *mut libc::ucred as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    if rc != 0 {
+        return -1;
+    }
+    cred.uid as jint
+}
+
 /// Bind the process-lifetime Wayland/X11 sockets and start watching them
 /// for the first connection. Needs the `TAWC_*` path env. Idempotent.
 #[unsafe(no_mangle)]

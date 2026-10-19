@@ -6,6 +6,7 @@ import android.os.Binder
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.os.Process
+import android.util.Log
 import me.phie.tawc.BuildConfig
 
 /**
@@ -60,6 +61,29 @@ class ExternalWaylandService : Service() {
         CompositorService.ensureRunning(this)
     }
 
+    /**
+     * Termux's `wayland-run` cannot bindService: it is an `app_process`
+     * process, and AMS rejects binds from callers without a process
+     * record. It therefore starts this service with one end of a
+     * socketpair in [EXTRA_CLIENT_FD]. By the time this runs the binder
+     * caller is AMS, so `callerAllowed()` cannot gate it.
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        @Suppress("DEPRECATION")
+        val pfd = intent?.getParcelableExtra<ParcelFileDescriptor>(EXTRA_CLIENT_FD)
+        if (pfd != null) {
+            // Native owns the fd after detachFd(), including the failure
+            // paths, so do not close it here.
+            if (!NativeBridge.nativeAdoptClientFd(pfd.detachFd())) {
+                Log.w(TAG, "external Wayland: compositor refused the client fd")
+            }
+        } else {
+            Log.w(TAG, "external Wayland: startService without $EXTRA_CLIENT_FD")
+        }
+        stopSelf(startId)
+        return START_NOT_STICKY
+    }
+
     override fun onBind(intent: Intent?): IBinder = binder
 
     private fun callerAllowed(): Boolean {
@@ -69,5 +93,12 @@ class ExternalWaylandService : Service() {
         if (packages.any { it == "com.termux" }) return true
         // Lets the PC-side prototype run from `adb shell` (uid 2000).
         return BuildConfig.DEBUG && packages.any { it == "com.android.shell" }
+    }
+
+    companion object {
+        private const val TAG = "tawc"
+
+        /** Intent extra carrying the client's ParcelFileDescriptor. */
+        const val EXTRA_CLIENT_FD = "me.phie.tawc.extra.CLIENT_FD"
     }
 }

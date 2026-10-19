@@ -23,4 +23,7 @@ public class ParcelFileDescriptor implements Parcelable {
     public int detachFd() {
         return -1;
     }
+
+    public void writeToParcel(Parcel dest, int flags) {
+    }
 }

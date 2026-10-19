@@ -2,7 +2,7 @@
 
 > **Status:** app side implemented (AIDL + `ExternalWaylandService` + manifest +
 > `nativeAdoptClientFd` + `event_loop` source + `aidl = true`), including the
-> `onStartCommand` fd intake the Termux launcher uses. The Termux-side
+> `onStartCommand` Binder-callback intake the Termux launcher uses. The Termux-side
 > `wayland-run` helper is in [`termux-wayland/`](../termux-wayland/); on-device
 > verification is still pending. See
 > [../notes/android.md](../notes/android.md) ("Wayland Socket Sharing") for the
@@ -140,7 +140,33 @@ class ExternalWaylandService : Service() {
         CompositorService.ensureRunning(this)
     }
 
+    /**
+     * Termux cannot bind, so it starts this service with a Binder token
+     * in the intent and then calls openClient() on it. That synchronous
+     * callback is what carries the fd (an Intent cannot).
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val host = intent?.getBundleExtra(EXTRA_HOST)?.getBinder(KEY_HOST)
+        if (host != null) {
+            try {
+                val pfd = IExternalWayland.Stub.asInterface(host).openClient()
+                if (pfd != null) {
+                    NativeBridge.nativeAdoptClientFd(pfd.detachFd())
+                }
+            } catch (e: Exception) {
+                // The launcher died or the handshake was already used.
+            }
+        }
+        stopSelf(startId)
+        return START_NOT_STICKY
+    }
+
     override fun onBind(intent: Intent?): IBinder = binder
+
+    companion object {
+        const val EXTRA_HOST = "me.phie.tawc.extra.HOST"
+        const val KEY_HOST = "host"
+    }
 
     /**
      * No custom permission: the Termux-side helper is an `app_process`
@@ -171,9 +197,11 @@ In `app/src/main/AndroidManifest.xml`, next to `CompositorService`:
     android:exported="true" />
 ```
 
-`exported` is required for Termux to bind. The uid allowlist in
-`openClient()` is the access control. Do not add a custom permission: an
-`app_process` caller has no manifest and cannot be granted one.
+`exported` is required for Termux to start it. The uid allowlist in
+`openClient()` only protects the AIDL bind path; the `startService` path
+is ungated (AMS supplies the start, so the original caller uid is not
+visible). Do not add a custom permission: an `app_process` caller has no
+manifest and cannot be granted one.
 
 ### 4. Native declaration
 
@@ -375,36 +403,61 @@ process, so AMS has no record for the caller and
 `SecurityException: Unable to find app for caller`. Borrowing
 `com.termux`'s package name or a hidden `ActivityThread` does not help:
 the check is on the calling Binder thread, not the package.
-`startService` is the exception — `startServiceLocked` treats a `null`
-caller as foreground, which is how Termux's own `am` works — so the fd
-travels as an `Intent` extra instead.
 
-1. **Create the socketpair and hand one end to the app.**
+**`startService` cannot carry the fd either.** It tolerates the null
+caller (`startServiceLocked` treats it as foreground, which is how `am`
+works), but `ActivityManagerService.startService` rejects any intent
+whose `hasFileDescriptors()` is true with
+`IllegalArgumentException: File descriptors passed in Intent`.
+
+**The working handshake: a Binder token in the Intent, fd in the
+callback.**
+
+1. **Hand the app a Binder token.**
 
    ```java
-   ParcelFileDescriptor[] pair = ParcelFileDescriptor.createSocketPair();
+   HostBinder host = new HostBinder();   // Binder subclass
+   Bundle extras = new Bundle();
+   extras.putBinder("host", host);
    Intent intent = new Intent().setComponent(new ComponentName(
        System.getenv().getOrDefault("TAWC_PACKAGE", "me.phie.tawc.dev"),
        "me.phie.tawc.compositor.ExternalWaylandService"));
-   intent.putExtra("me.phie.tawc.extra.CLIENT_FD", pair[1]);
+   intent.putExtra("me.phie.tawc.extra.HOST", extras);
    startService(intent);   // IActivityManager.startService by reflection, caller = null
-   pair[1].close();        // Binder dup'd it for the app
+   ParcelFileDescriptor clientEnd = host.await(30_000);
    ```
 
-   The service's AIDL `onBind` is unreachable from Termux. What it
-   needs instead is an `onStartCommand` that reads the extra and calls
-   `nativeAdoptClientFd(pfd.detachFd())`, then `stopSelf`. That reuses
-   the plan's JNI unchanged.
+   A Binder is not a file descriptor, so AMS accepts the Intent.
+   `app_process` starts its Binder thread pool in
+   `AppRuntime.onStarted()`, before `main()`, so the callback is handled
+   while `main()` waits.
 
-2. **Exec the client on the other end.**
+2. **Answer `openClient()` and exec the client.**
+
+   ```java
+   // HostBinder.onTransact: the app calls the existing
+   // IExternalWayland.openClient(), transaction 1.
+   ParcelFileDescriptor[] pair = ParcelFileDescriptor.createSocketPair();
+   clientEnd = pair[0];                  // stays here for the child
+   reply.writeNoException();
+   reply.writeInt(1);                    // AIDL non-null marker
+   pair[1].writeToParcel(reply, 0);      // Binder dups it
+   pair[1].close();
+   ```
+
+   The app's `onStartCommand` reads the token, calls `openClient()`, and
+   passes the returned fd to `nativeAdoptClientFd`. Reusing the app's own
+   AIDL means neither side needs a new interface.
 
    ```java
    // createSocketPair sets CLOEXEC on Q+; clear it so exec inherits the fd.
-   Os.fcntlInt(pair[0].getFileDescriptor(), OsConstants.F_SETFD, 0);
+   Os.fcntlInt(clientEnd.getFileDescriptor(), OsConstants.F_SETFD, 0);
    ProcessBuilder pb = new ProcessBuilder(args);
-   pb.environment().put("WAYLAND_SOCKET", Integer.toString(pair[0].getFd()));
+   pb.environment().put("WAYLAND_SOCKET", Integer.toString(clientEnd.getFd()));
    pb.inheritIO();
-   int rc = pb.start().waitFor();
+   Process child = pb.start();
+   clientEnd.close();   // the child has its own copy
+   int rc = child.waitFor();
    ```
 
    `libwayland-client` checks `WAYLAND_SOCKET` **before**
@@ -414,10 +467,11 @@ travels as an `Intent` extra instead.
 
 `WAYLAND_SOCKET` only works for one client, so `wayland-run <cmd>` is
 the interface. Build with `termux-wayland/build.sh` (`javac` against
-`android.jar` + `d8`), `chmod 0400` the dex container (Android 14
-rejects executing writable dex), and run through `app_process`.
+`android.jar` or the bundled stubs, plus `d8`), `chmod 0400` the dex
+container (Android 14 rejects executing writable dex), and run through
+`app_process`.
 
-The fd arrives via AMS, so `onStartCommand` cannot see the original
+The start arrives via AMS, so `onStartCommand` cannot see the original
 caller uid and any app may start the exported service. Fine for a dev
 feature; see `termux-wayland/README.md`.
 
@@ -455,9 +509,10 @@ feature; see `termux-wayland/README.md`.
   path); without it the allowlist silently denies everyone.
 - **The `startService` path is ungated.** `onStartCommand` cannot see the
   original caller (AMS is the Binder caller) and `getCallingUid()` is our
-  own uid, so any app may start the exported service and hand over an fd.
-  The AIDL `openClient()` path keeps the uid check; this is a dev-only
-  trade-off until the fd arrives with a caller identity (follow-up below).
+  own uid, so any app may start the exported service and receive a
+  compositor fd through the callback. The AIDL `openClient()` bind path
+  keeps the uid check; this is a dev-only trade-off until the start
+  carries a caller identity (follow-up below).
 - **`onCreate` does the one-time asset extraction on the main thread.**
   `ensureActivation` (xkb, libhybris, Xwayland) can take seconds on the
   first bind in a fresh process. Kept synchronous so the first

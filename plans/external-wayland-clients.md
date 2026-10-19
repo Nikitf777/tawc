@@ -356,50 +356,45 @@ If AIDL is not already on, add it in `app/build.gradle.kts`:
     }
 ```
 
-## Termux side (needed to exercise it)
+## Termux side (implemented in `termux-wayland/`)
 
-A small `app_process` program, the same shape as `am` and the
-Termux:X11 loader. It must do four things:
+A small `app_process` program, the same shape as `am`. Source, build
+script, and `wayland-run` wrapper live in `termux-wayland/`.
 
-1. **Get a `Context` that claims `com.termux`.** `app_process` has no
-   app context, but `ActivityThread.systemMain()` creates a usable one,
-   and `createPackageContext("com.termux", 0)` gives it the right
-   `getOpPackageName()`. Compile against a hidden stub
-   (`android.app.ActivityThread`), exactly like
-   `termux-x11/shell-loader/stub`. If `bindService` rejects the borrowed
-   package, fall back to the `TermuxAm` reflective
-   `IActivityManager` route.
+**`bindService` cannot be used from here.** `app_process` is not an app
+process, so AMS has no record for the caller and
+`ActiveServices.bindServiceLocked` throws
+`SecurityException: Unable to find app for caller`. Borrowing
+`com.termux`'s package name or a hidden `ActivityThread` does not help:
+the check is on the calling Binder thread, not the package.
+`startService` is the exception — `startServiceLocked` treats a `null`
+caller as foreground, which is how Termux's own `am` works — so the fd
+travels as an `Intent` extra instead.
 
-2. **Bind to the service.**
+1. **Create the socketpair and hand one end to the app.**
 
    ```java
-   Intent i = new Intent().setComponent(new ComponentName(
+   ParcelFileDescriptor[] pair = ParcelFileDescriptor.createSocketPair();
+   Intent intent = new Intent().setComponent(new ComponentName(
        System.getenv().getOrDefault("TAWC_PACKAGE", "me.phie.tawc.dev"),
        "me.phie.tawc.compositor.ExternalWaylandService"));
-   ctx.bindService(i, connection, Context.BIND_AUTO_CREATE);
+   intent.putExtra("me.phie.tawc.extra.CLIENT_FD", pair[1]);
+   startService(intent);   // IActivityManager.startService by reflection, caller = null
+   pair[1].close();        // Binder dup'd it for the app
    ```
 
-   Wait for `onServiceConnected` (the process needs a main `Looper`).
+   The service's AIDL `onBind` is unreachable from Termux. What it
+   needs instead is an `onStartCommand` that reads the extra and calls
+   `nativeAdoptClientFd(pfd.detachFd())`, then `stopSelf`. That reuses
+   the plan's JNI unchanged.
 
-3. **Get the fd.**
-
-   ```java
-   IExternalWayland w = IExternalWayland.Stub.asInterface(service);
-   ParcelFileDescriptor pfd = w.openClient();
-   ```
-
-   Copy the app's `IExternalWayland.aidl` into the helper and let `aidl`
-   generate the interface; it is self-contained.
-
-4. **Exec the client with the fd.**
+2. **Exec the client on the other end.**
 
    ```java
-   // Binder may have set CLOEXEC on the received fd.
-   android.system.Os.fcntlInt(
-       pfd.getFileDescriptor(), android.system.OsConstants.F_SETFD, 0);
-
+   // createSocketPair sets CLOEXEC on Q+; clear it so exec inherits the fd.
+   Os.fcntlInt(pair[0].getFileDescriptor(), OsConstants.F_SETFD, 0);
    ProcessBuilder pb = new ProcessBuilder(args);
-   pb.environment().put("WAYLAND_SOCKET", Integer.toString(pfd.getFd()));
+   pb.environment().put("WAYLAND_SOCKET", Integer.toString(pair[0].getFd()));
    pb.inheritIO();
    int rc = pb.start().waitFor();
    ```
@@ -409,17 +404,14 @@ Termux:X11 loader. It must do four things:
    display transport. The client must call `wl_display_connect(NULL)`;
    all normal toolkits do.
 
-`WAYLAND_SOCKET` only works for one client. A `wayland-run <cmd>`
-wrapper (bind, `openClient`, exec) is the minimal usable interface.
+`WAYLAND_SOCKET` only works for one client, so `wayland-run <cmd>` is
+the interface. Build with `termux-wayland/build.sh` (`javac` against
+`android.jar` + `d8`), `chmod 0400` the dex container (Android 14
+rejects executing writable dex), and run through `app_process`.
 
-Build the helper like Termux:X11's loader: `javac` against
-`android.jar` + a hidden stub, `d8` to `classes.dex`, zip as an APK,
-`chmod 0400` it (Android 14 rejects executing writable dex), then run
-
-```sh
-CLASSPATH=$PREFIX/libexec/wayland-bridge/wayland-bridge.apk \
-  app_process / --nice-name=wayland-run com.termux.wayland.WaylandLaunch "$@"
-```
+The fd arrives via AMS, so `onStartCommand` cannot see the original
+caller uid and any app may start the exported service. Fine for a dev
+feature; see `termux-wayland/README.md`.
 
 ## Build and test on the PC
 

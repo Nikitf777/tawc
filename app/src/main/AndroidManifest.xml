@@ -36,6 +36,12 @@
         <package android:name="com.termux" />
         <!-- Debug-only fallback so the helper can run from `adb shell`. -->
         <package android:name="com.android.shell" />
+        <!-- External apps allowlist picker lists launchable apps without
+             QUERY_ALL_PACKAGES. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
     <!--
@@ -228,6 +234,12 @@
              chosen icon name. -->
         <activity
             android:name=".launcher.IconPickerActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".ExternalAppsActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize" />

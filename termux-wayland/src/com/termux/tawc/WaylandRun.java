@@ -65,6 +65,10 @@ public final class WaylandRun {
     // Extra, not in the AIDL: a one-way call the app makes once the fd is
     // handed to native.
     private static final int TRANSACTION_CLIENT_ADOPTED = IBinder.FIRST_CALL_TRANSACTION + 1;
+    // Extra, not in the AIDL: a one-way call the app makes first when it
+    // refuses the caller, carrying a human-readable reason. An older app
+    // never sends it and we fall back to the adopted signal.
+    private static final int TRANSACTION_CLIENT_REFUSED = IBinder.FIRST_CALL_TRANSACTION + 2;
 
     // First start may include asset extraction (ensureActivation).
     private static final long CALLBACK_TIMEOUT_MS = 30_000;
@@ -114,7 +118,13 @@ public final class WaylandRun {
             System.exit(1);
         }
 
-        ParcelFileDescriptor clientEnd = host.awaitAdopted(CALLBACK_TIMEOUT_MS);
+        ParcelFileDescriptor clientEnd = host.awaitSignal(CALLBACK_TIMEOUT_MS);
+        String refused = host.refusedReason();
+        if (refused != null) {
+            System.err.println("wayland-run: TAWC refused to connect this app: " + refused);
+            System.err.println("wayland-run: allow it in TAWC Settings -> External apps");
+            System.exit(1);
+        }
         if (clientEnd == null) {
             System.err.println("wayland-run: " + pkg
                     + " did not return a client fd (is the app updated?)");
@@ -156,8 +166,9 @@ public final class WaylandRun {
      */
     private static final class HostBinder extends Binder {
         private final Object lock = new Object();
-        private final CountDownLatch adopted = new CountDownLatch(1);
+        private final CountDownLatch signal = new CountDownLatch(1);
         private ParcelFileDescriptor clientEnd;
+        private String refused;
 
         @Override
         protected boolean onTransact(int code, Parcel data, Parcel reply, int flags)
@@ -165,7 +176,17 @@ public final class WaylandRun {
             if (code == TRANSACTION_CLIENT_ADOPTED) {
                 // One-way; the app sent this after openClient() returned, so
                 // the reply below has already been delivered. Safe to exec.
-                adopted.countDown();
+                signal.countDown();
+                return true;
+            }
+            if (code == TRANSACTION_CLIENT_REFUSED) {
+                // One-way. Both this and the adopted signal count the same
+                // latch down, so main() cannot read the reason before the
+                // handler that writes it has run.
+                synchronized (lock) {
+                    refused = data.readString();
+                }
+                signal.countDown();
                 return true;
             }
             if (code != TRANSACTION_OPEN_CLIENT) {
@@ -201,9 +222,19 @@ public final class WaylandRun {
             return true;
         }
 
-        /** Blocks until the app confirms the compositor end is adopted. */
-        ParcelFileDescriptor awaitAdopted(long timeoutMs) throws InterruptedException {
-            if (!adopted.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+        /** The refusal reason, or null when the app did not refuse. */
+        String refusedReason() {
+            synchronized (lock) {
+                return refused;
+            }
+        }
+
+        /**
+         * Blocks until the app either refuses or confirms the compositor
+         * end is adopted. The client end is null on a refusal.
+         */
+        ParcelFileDescriptor awaitSignal(long timeoutMs) throws InterruptedException {
+            if (!signal.await(timeoutMs, TimeUnit.MILLISECONDS)) {
                 return null;
             }
             synchronized (lock) {

@@ -207,11 +207,12 @@ In `app/src/main/AndroidManifest.xml`, next to `CompositorService`:
     android:exported="true" />
 ```
 
-`exported` is required for Termux to start it. The uid allowlist in
-`openClient()` only protects the AIDL bind path; the `startService` path
-is ungated (AMS supplies the start, so the original caller uid is not
-visible). Do not add a custom permission: an `app_process` caller has no
-manifest and cannot be granted one.
+`exported` is required for Termux to start it. Both entry points are
+gated by [ExternalWaylandAccess](../app/src/main/java/me/phie/tawc/compositor/ExternalWaylandAccess.kt):
+the bind path uses `Binder.getCallingUid()`, and the start path recovers
+the launcher's uid from `SO_PEERCRED` on the socketpair. Do not add a
+custom permission: an `app_process` caller has no manifest and cannot be
+granted one.
 
 ### 4. Native declaration
 
@@ -513,30 +514,41 @@ feature; see `termux-wayland/README.md`.
    - `adb logcat -s tawc-native` has no `insert_client failed`.
    - `nativeQueryState` reports one client.
 4. For a no-Termux smoke test, run the same helper from `adb shell`
-   (uid 2000); the `startService` path does not check the caller.
+   (uid 2000); debug builds pre-allow `com.android.shell`, so the
+   `startService` path accepts it.
 
 ## Risks and notes
 
-- **Identity is lost.** `SO_PEERCRED` on an app-created socketpair
-  reports TAWC itself, not the Termux client. Do not build uid-based
-  policy on it. (The listener-adoption variant preserves the real uid.)
+- **Identity: `SO_PEERCRED` names the socketpair's creator.** For the
+  `startService` path that is the Termux launcher, so `nativePeerUid`
+  recovers the real caller even though AMS is the Binder caller. The
+  credential is fixed at `socketpair()` time, so a later Binder call
+  cannot spoof it. A relay design would report the relay's uid for every
+  client; per-client policy would need the uid as an `openClient` argument.
 - **One fd per client.** This is deliberate; no listener or relay.
 - **Queue cap 32.** More pending fds are refused with a closed pair.
   The client sees EOF.
 - **Compositor restarts.** `clear_senders()` drops the sender; a
   restart recreates the channel and drains the queue. A send that loses
   the race with teardown just closes that client.
-- **No permission on the service.** The uid allowlist is the gate.
-  Tighten it before shipping outside a dev build. Because Android 11+
-  filters `getPackagesForUid` by package visibility, the manifest declares
-  `<queries>` for `com.termux` (and `com.android.shell` for the debug
-  path); without it the allowlist silently denies everyone.
-- **The `startService` path is ungated.** `onStartCommand` cannot see the
-  original caller (AMS is the Binder caller) and `getCallingUid()` is our
-  own uid, so any app may start the exported service and receive a
-  compositor fd through the callback. The AIDL `openClient()` bind path
-  keeps the uid check; this is a dev-only trade-off until the start
-  carries a caller identity (follow-up below).
+- **No permission on the service.** Access is decided in
+  [ExternalWaylandAccess](../app/src/main/java/me/phie/tawc/compositor/ExternalWaylandAccess.kt)
+  from `Settings.externalAccessMode` (Disabled / Allowed apps only / Any
+  app) and the package allowlist. The default mode is Allowed apps only,
+  seeded with `com.termux` (`com.android.shell` too in debug) only while
+  the preference key is absent, so upgrading users keep a working
+  launcher while an explicit empty allowlist stays empty. Because Android
+  11+ filters `getPackagesForUid` by package visibility, the manifest
+  declares `<queries>` for `com.termux`, `com.android.shell` (debug), and
+  `MAIN`/`LAUNCHER` intents; without the first two the allowlist silently
+  denies everyone, and without the last the picker lists nothing.
+- **Both entry points are gated.** `onStartCommand` authenticates via
+  `SO_PEERCRED` on the fd before adopting it, so the start path is no
+  longer an open door. A denial closes the fd and sends the reason on
+  transaction 3; `onCreate` also skips activation entirely while the mode
+  is Disabled. An older launcher has no handler for transaction 3 and
+  still execs the client, which then fails to connect — the adopted
+  signal is still sent after the refusal for that case.
 - **`onCreate` does the one-time asset extraction on the main thread.**
   `ensureActivation` (xkb, libhybris, Xwayland) can take seconds on the
   first bind in a fresh process. Kept synchronous so the first

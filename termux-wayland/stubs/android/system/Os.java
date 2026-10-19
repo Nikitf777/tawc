@@ -7,4 +7,7 @@ public class Os {
     public static int fcntlInt(FileDescriptor fd, int cmd, int arg) throws Exception {
         return 0;
     }
+
+    public static void execve(String filename, String[] argv, String[] envp) throws Exception {
+    }
 }

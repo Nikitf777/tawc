@@ -29,8 +29,13 @@ This is the current development approach.
    path cannot see the original caller uid, so any app may use it
    (dev-only). The client must be launched with `WAYLAND_SOCKET=<fd>`
    (libwayland checks it before `WAYLAND_DISPLAY`); one fd per client, no
-   relay. Termux-side helper: [../termux-wayland/](../termux-wayland/);
-   details in
+   relay. The helper cannot use `ProcessBuilder`: Android's `UNIXProcess`
+   child closes every fd ≥ 4 before exec, so the socketpair is dropped and
+   the client fails to connect. It `execve`s itself into the client
+   instead (which keeps the fd), after the app confirms adoption with a
+   one-way transaction (transaction 2), so the fd reply cannot be cut off
+   when `execve` tears down the helper's Binder threads. Termux-side
+   helper: [../termux-wayland/](../termux-wayland/); details in
    [../plans/external-wayland-clients.md](../plans/external-wayland-clients.md).
 
 2. **Shared UID:** `sharedUserId="com.termux"` makes both apps run as same UID/SELinux

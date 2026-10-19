@@ -143,7 +143,8 @@ class ExternalWaylandService : Service() {
     /**
      * Termux cannot bind, so it starts this service with a Binder token
      * in the intent and then calls openClient() on it. That synchronous
-     * callback is what carries the fd (an Intent cannot).
+     * callback is what carries the fd (an Intent cannot). The one-way
+     * adopted signal lets the launcher execve() the client safely.
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val host = intent?.getBundleExtra(EXTRA_HOST)?.getBinder(KEY_HOST)
@@ -155,6 +156,13 @@ class ExternalWaylandService : Service() {
                 }
             } catch (e: Exception) {
                 // The launcher died or the handshake was already used.
+            } finally {
+                val data = Parcel.obtain()
+                try {
+                    host.transact(TRANSACTION_CLIENT_ADOPTED, data, null, IBinder.FLAG_ONEWAY)
+                } finally {
+                    data.recycle()
+                }
             }
         }
         stopSelf(startId)
@@ -166,6 +174,8 @@ class ExternalWaylandService : Service() {
     companion object {
         const val EXTRA_HOST = "me.phie.tawc.extra.HOST"
         const val KEY_HOST = "host"
+        // Matches WaylandRun; openClient() is FIRST_CALL_TRANSACTION (1).
+        const val TRANSACTION_CLIENT_ADOPTED = 2
     }
 
     /**
@@ -424,7 +434,7 @@ callback.**
        "me.phie.tawc.compositor.ExternalWaylandService"));
    intent.putExtra("me.phie.tawc.extra.HOST", extras);
    startService(intent);   // IActivityManager.startService by reflection, caller = null
-   ParcelFileDescriptor clientEnd = host.await(30_000);
+   ParcelFileDescriptor clientEnd = host.awaitAdopted(30_000);
    ```
 
    A Binder is not a file descriptor, so AMS accepts the Intent.
@@ -432,7 +442,7 @@ callback.**
    `AppRuntime.onStarted()`, before `main()`, so the callback is handled
    while `main()` waits.
 
-2. **Answer `openClient()` and exec the client.**
+2. **Answer `openClient()`, wait for adoption, then `execve` the client.**
 
    ```java
    // HostBinder.onTransact: the app calls the existing
@@ -447,17 +457,31 @@ callback.**
 
    The app's `onStartCommand` reads the token, calls `openClient()`, and
    passes the returned fd to `nativeAdoptClientFd`. Reusing the app's own
-   AIDL means neither side needs a new interface.
+   AIDL means neither side needs a new interface. It then sends a
+   **one-way adopted signal** (transaction 2, not in the AIDL):
 
    ```java
-   // createSocketPair sets CLOEXEC on Q+; clear it so exec inherits the fd.
-   Os.fcntlInt(clientEnd.getFileDescriptor(), OsConstants.F_SETFD, 0);
-   ProcessBuilder pb = new ProcessBuilder(args);
-   pb.environment().put("WAYLAND_SOCKET", Integer.toString(clientEnd.getFd()));
-   pb.inheritIO();
-   Process child = pb.start();
-   clientEnd.close();   // the child has its own copy
-   int rc = child.waitFor();
+   // HostBinder.onTransact, transaction 2.
+   adopted.countDown();
+   ```
+
+   **The client cannot be spawned with `ProcessBuilder`.** Android's
+   `UNIXProcess` child calls `closeDescriptors()` before exec, which
+   closes every fd ≥ 4 (`FAIL_FILENO + 1`); the socketpair never reaches
+   the client and `wl_display_connect` fails. Instead the launcher
+   `execve`s itself, which keeps every descriptor without `FD_CLOEXEC`:
+
+   ```java
+   // Wait for the app's adopted signal first: execve destroys our Binder
+   // threads, and the signal is only sent after the fd reply is delivered.
+   ParcelFileDescriptor clientEnd = host.awaitAdopted(30_000);
+
+   // createSocketPair sets CLOEXEC on Q+; clear it so execve inherits the fd.
+   Os.fcntlInt(clientEnd.getFileDescriptor(), F_SETFD, 0);
+   Map<String, String> env = new HashMap<>(System.getenv());
+   env.put("WAYLAND_SOCKET", Integer.toString(clientEnd.getFd()));
+   // execve does not search PATH, so resolve it ourselves.
+   Os.execve(resolve(args[0]), args, toEnvp(env));
    ```
 
    `libwayland-client` checks `WAYLAND_SOCKET` **before**
@@ -520,6 +544,11 @@ feature; see `termux-wayland/README.md`.
   this becomes a shipping path.
 - **`WAYLAND_SOCKET` is invisible to `WAYLAND_DISPLAY`.** A client that
   passes an explicit socket name will ignore it.
+- **`ProcessBuilder` cannot be used.** Android's `UNIXProcess` child calls
+  `closeDescriptors()` before exec and closes every fd ≥ 4, so an
+  inherited socketpair is dropped. Only `Os.execve` (process replacement)
+  preserves it, and that requires the adopted signal so the fd reply is
+  not cut off mid-transaction.
 - **Root shortcut.** With root, tawc's existing chroot path already
   connects directly (notes/android.md). This patch is for no-root.
 

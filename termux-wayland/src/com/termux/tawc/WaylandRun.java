@@ -2,12 +2,20 @@ package com.termux.tawc;
 
 import android.content.ComponentName;
 import android.content.Intent;
+import android.os.Binder;
+import android.os.Bundle;
+import android.os.IBinder;
+import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
+import android.os.RemoteException;
 import android.os.UserHandle;
 import android.system.Os;
 
+import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Termux-side launcher for TAWC's external Wayland clients.
@@ -18,13 +26,15 @@ import java.lang.reflect.Method;
  * throws "Unable to find app for caller"). {@code startService} is the
  * one primitive that tolerates the missing caller
  * (ActiveServices.startServiceLocked treats a null caller as foreground,
- * which is how Termux's own {@code am} works), so one end of a fresh
- * socketpair travels as an Intent extra instead of through a bound
- * interface.
+ * which is how Termux's own {@code am} works).
  *
- * TAWC's ExternalWaylandService reads the extra, hands the fd to the
- * compositor, and the client in this process talks Wayland over the
- * other end via WAYLAND_SOCKET.
+ * An Intent cannot carry the fd: AMS rejects any {@code startService}
+ * Intent with {@link Intent#hasFileDescriptors} set. So the Intent carries
+ * a Binder token instead, and the app calls
+ * {@code IExternalWayland.openClient()} back on it. That is a normal
+ * synchronous Binder call, so the compositor end comes back as a
+ * {@link ParcelFileDescriptor}. The client end stays here and is handed to
+ * the child through {@code WAYLAND_SOCKET}.
  *
  * Usage: {@code wayland-run <command> [args...]}
  */
@@ -33,8 +43,20 @@ public final class WaylandRun {
     private static final String DEFAULT_PACKAGE = "me.phie.tawc.dev";
     private static final String SERVICE_CLASS =
             "me.phie.tawc.compositor.ExternalWaylandService";
-    private static final String EXTRA_FD = "me.phie.tawc.extra.CLIENT_FD";
     private static final String CALLING_PACKAGE = "com.termux";
+
+    // Intent extra: a Bundle holding HostBinder under KEY_HOST. A Binder is
+    // not a file descriptor, so AMS accepts the Intent.
+    private static final String EXTRA_HOST = "me.phie.tawc.extra.HOST";
+    private static final String KEY_HOST = "host";
+
+    // Must match app/src/main/aidl/.../IExternalWayland.aidl. The generated
+    // Stub uses FIRST_CALL_TRANSACTION for its only method.
+    private static final String DESCRIPTOR = "me.phie.tawc.compositor.IExternalWayland";
+    private static final int TRANSACTION_OPEN_CLIENT = IBinder.FIRST_CALL_TRANSACTION;
+
+    // First start may include asset extraction (ensureActivation).
+    private static final long CALLBACK_TIMEOUT_MS = 30_000;
 
     // Linux F_SETFD; hardcoded so the helper can compile against the bundled
     // stubs (OsConstants.F_SETFD is not a compile-time constant).
@@ -54,13 +76,13 @@ public final class WaylandRun {
             pkg = DEFAULT_PACKAGE;
         }
 
-        ParcelFileDescriptor[] pair = ParcelFileDescriptor.createSocketPair();
-        ParcelFileDescriptor appEnd = pair[1];
-        ParcelFileDescriptor clientEnd = pair[0];
+        HostBinder host = new HostBinder();
+        Bundle extras = new Bundle();
+        extras.putBinder(KEY_HOST, host);
 
         Intent intent = new Intent();
         intent.setComponent(new ComponentName(pkg, SERVICE_CLASS));
-        intent.putExtra(EXTRA_FD, appEnd);
+        intent.putExtra(EXTRA_HOST, extras);
 
         ComponentName started;
         try {
@@ -81,17 +103,97 @@ public final class WaylandRun {
             System.exit(1);
         }
 
-        // TAWC holds its own dup of this end now.
-        appEnd.close();
+        ParcelFileDescriptor clientEnd = host.await(CALLBACK_TIMEOUT_MS);
+        if (clientEnd == null) {
+            System.err.println("wayland-run: " + pkg
+                    + " did not return a client fd (is the app updated?)");
+            System.exit(1);
+        }
 
-        // ParcelFileDescriptor.createSocketPair() sets CLOEXEC on Q+; the
-        // client must inherit the fd across exec for WAYLAND_SOCKET to work.
+        // createSocketPair sets CLOEXEC on Q+; the client must inherit the
+        // fd across exec for WAYLAND_SOCKET to work.
         Os.fcntlInt(clientEnd.getFileDescriptor(), F_SETFD, 0);
+        int fd = clientEnd.getFd();
 
         ProcessBuilder pb = new ProcessBuilder(args);
-        pb.environment().put("WAYLAND_SOCKET", Integer.toString(clientEnd.getFd()));
+        pb.environment().put("WAYLAND_SOCKET", Integer.toString(fd));
         pb.inheritIO();
-        System.exit(pb.start().waitFor());
+        Process child = pb.start();
+
+        // The child has its own copy after fork/exec. Drop ours so the
+        // compositor sees EOF as soon as the client closes its end.
+        clientEnd.close();
+
+        System.exit(child.waitFor());
+    }
+
+    /**
+     * The app's half of the handshake. It calls the existing
+     * IExternalWayland.openClient() on this Binder; we create the
+     * socketpair and return the compositor end, keeping the client end.
+     *
+     * app_process starts its Binder thread pool in AppRuntime.onStarted()
+     * before invoking main(), so this runs on a pool thread while main()
+     * waits on the latch.
+     */
+    private static final class HostBinder extends Binder {
+        private final Object lock = new Object();
+        private final CountDownLatch ready = new CountDownLatch(1);
+        private ParcelFileDescriptor clientEnd;
+
+        @Override
+        protected boolean onTransact(int code, Parcel data, Parcel reply, int flags)
+                throws RemoteException {
+            if (code != TRANSACTION_OPEN_CLIENT) {
+                return super.onTransact(code, data, reply, flags);
+            }
+            data.enforceInterface(DESCRIPTOR);
+
+            ParcelFileDescriptor[] pair;
+            try {
+                pair = ParcelFileDescriptor.createSocketPair();
+            } catch (IOException e) {
+                reply.writeException(e);
+                return true;
+            }
+
+            synchronized (lock) {
+                if (clientEnd != null) {
+                    closeQuietly(pair[0]);
+                    closeQuietly(pair[1]);
+                    reply.writeException(
+                            new IllegalStateException("client fd already issued"));
+                    return true;
+                }
+                clientEnd = pair[0];
+            }
+
+            reply.writeNoException();
+            // AIDL marks a non-null Parcelable return with a 1.
+            reply.writeInt(1);
+            pair[1].writeToParcel(reply, 0);
+            // Binder dup'd the fd into the reply; drop our copy.
+            closeQuietly(pair[1]);
+
+            ready.countDown();
+            return true;
+        }
+
+        ParcelFileDescriptor await(long timeoutMs) throws InterruptedException {
+            if (!ready.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+                return null;
+            }
+            synchronized (lock) {
+                return clientEnd;
+            }
+        }
+    }
+
+    private static void closeQuietly(ParcelFileDescriptor pfd) {
+        try {
+            pfd.close();
+        } catch (IOException ignored) {
+        }
     }
 
     /**

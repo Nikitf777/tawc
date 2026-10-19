@@ -9,25 +9,28 @@ This is the current development approach.
 **Without root (proot, future goal):** SELinux blocks cross-app `connect()` between
 `untrusted_app` domains on Android 9+. Two viable solutions:
 
-1. **Binder fd passing (implemented, app side):** the exported
+1. **Binder fd passing (implemented):** the exported
    [ExternalWaylandService](../app/src/main/java/me/phie/tawc/compositor/ExternalWaylandService.kt)
    hands one end of a fresh `socketpair()` to the caller; the near end is
    adopted by the compositor through `NativeBridge.nativeAdoptClientFd`,
    which hands it to the same `insert_client` path the in-container clients
-   use. There are two entry points: the `IExternalWayland` AIDL
-   (`openClient()`) and — because an `app_process` caller cannot bind — a
-   `startService` intent extra (`me.phie.tawc.extra.CLIENT_FD`) read in
-   `onStartCommand`. No `connect()` syscall occurs, so neither SELinux nor
-   `/data/data/<pkg>` DAC traversal applies. The AIDL path is gated by a uid
-   allowlist (`com.termux`, plus `com.android.shell` in debug) rather than a
-   manifest permission, because the Termux-side caller is an `app_process`
-   process with no package; that lookup needs `<queries>` entries in the
-   manifest (Android 11+ package visibility) — without them
-   `getPackagesForUid` denies everyone. The `startService` path cannot see
-   the original caller uid, so any app may use it (dev-only). The client
-   must be launched with `WAYLAND_SOCKET=<fd>` (libwayland checks it before
-   `WAYLAND_DISPLAY`); one fd per client, no relay. Termux-side helper:
-   [../termux-wayland/](../termux-wayland/); details in
+   use. There are two entry points. The `IExternalWayland` AIDL
+   (`openClient()`) is the bind path. An `app_process` caller cannot bind,
+   and `startService` rejects Intents containing fds, so the Termux helper
+   starts the service with a Binder token (`me.phie.tawc.extra.HOST`) and
+   the app calls `openClient()` back on that token; the fd travels in that
+   synchronous Binder reply. No `connect()` syscall occurs, so neither
+   SELinux nor `/data/data/<pkg>` DAC traversal applies. The AIDL path is
+   gated by a uid allowlist (`com.termux`, plus `com.android.shell` in
+   debug) rather than a manifest permission, because the Termux-side caller
+   is an `app_process` process with no package; that lookup needs
+   `<queries>` entries in the manifest (Android 11+ package visibility) —
+   without them `getPackagesForUid` denies everyone. The `startService`
+   path cannot see the original caller uid, so any app may use it
+   (dev-only). The client must be launched with `WAYLAND_SOCKET=<fd>`
+   (libwayland checks it before `WAYLAND_DISPLAY`); one fd per client, no
+   relay. Termux-side helper: [../termux-wayland/](../termux-wayland/);
+   details in
    [../plans/external-wayland-clients.md](../plans/external-wayland-clients.md).
 
 2. **Shared UID:** `sharedUserId="com.termux"` makes both apps run as same UID/SELinux

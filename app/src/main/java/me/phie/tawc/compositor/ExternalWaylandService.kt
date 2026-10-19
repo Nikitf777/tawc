@@ -4,6 +4,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
+import android.os.Parcel
 import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.util.Log
@@ -71,6 +72,12 @@ class ExternalWaylandService : Service() {
      * synchronous Binder call is what carries the fd; an Intent cannot
      * (AMS rejects `startService` intents with file descriptors).
      *
+     * `wayland-run` then execve()s itself into the client, which destroys
+     * its Binder threads. Before it does that it waits for
+     * [TRANSACTION_CLIENT_ADOPTED]; sending that only after `openClient()`
+     * has returned (and after native adopted the fd) guarantees the fd
+     * reply was already delivered.
+     *
      * By the time this runs the binder caller is AMS, so
      * `callerAllowed()` cannot gate it.
      */
@@ -84,12 +91,26 @@ class ExternalWaylandService : Service() {
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "external Wayland: host callback failed", e)
+            } finally {
+                notifyAdopted(host)
             }
         } else {
             Log.w(TAG, "external Wayland: startService without host binder")
         }
         stopSelf(startId)
         return START_NOT_STICKY
+    }
+
+    /** Lets the launcher exec the client now that the fd cannot be lost. */
+    private fun notifyAdopted(host: IBinder) {
+        val data = Parcel.obtain()
+        try {
+            host.transact(TRANSACTION_CLIENT_ADOPTED, data, null, IBinder.FLAG_ONEWAY)
+        } catch (e: Exception) {
+            Log.w(TAG, "external Wayland: adopted signal failed", e)
+        } finally {
+            data.recycle()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -109,5 +130,11 @@ class ExternalWaylandService : Service() {
         /** Matches WaylandRun's EXTRA_HOST / KEY_HOST. */
         const val EXTRA_HOST = "me.phie.tawc.extra.HOST"
         const val KEY_HOST = "host"
+
+        /**
+         * Matches WaylandRun's TRANSACTION_CLIENT_ADOPTED. The generated
+         * stub uses FIRST_CALL_TRANSACTION for openClient(), so this is 2.
+         */
+        const val TRANSACTION_CLIENT_ADOPTED = 2
     }
 }

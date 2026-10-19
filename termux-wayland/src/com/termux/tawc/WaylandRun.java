@@ -11,9 +11,11 @@ import android.os.RemoteException;
 import android.os.UserHandle;
 import android.system.Os;
 
-import java.io.IOException;
+import java.io.File;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -33,8 +35,14 @@ import java.util.concurrent.TimeUnit;
  * a Binder token instead, and the app calls
  * {@code IExternalWayland.openClient()} back on it. That is a normal
  * synchronous Binder call, so the compositor end comes back as a
- * {@link ParcelFileDescriptor}. The client end stays here and is handed to
- * the child through {@code WAYLAND_SOCKET}.
+ * {@link ParcelFileDescriptor}. The client end stays here.
+ *
+ * The client cannot be spawned with {@link ProcessBuilder}: Android's
+ * child closes every fd >= 4 before exec (closeDescriptors() in
+ * UNIXProcess_md.c), so the client could never inherit the socket. The
+ * helper {@code execve}s itself into the client instead, which keeps the
+ * fd. It does that only after the app signals that the compositor end is
+ * adopted, because execve destroys this process's Binder threads.
  *
  * Usage: {@code wayland-run <command> [args...]}
  */
@@ -54,6 +62,9 @@ public final class WaylandRun {
     // Stub uses FIRST_CALL_TRANSACTION for its only method.
     private static final String DESCRIPTOR = "me.phie.tawc.compositor.IExternalWayland";
     private static final int TRANSACTION_OPEN_CLIENT = IBinder.FIRST_CALL_TRANSACTION;
+    // Extra, not in the AIDL: a one-way call the app makes once the fd is
+    // handed to native.
+    private static final int TRANSACTION_CLIENT_ADOPTED = IBinder.FIRST_CALL_TRANSACTION + 1;
 
     // First start may include asset extraction (ensureActivation).
     private static final long CALLBACK_TIMEOUT_MS = 30_000;
@@ -103,7 +114,7 @@ public final class WaylandRun {
             System.exit(1);
         }
 
-        ParcelFileDescriptor clientEnd = host.await(CALLBACK_TIMEOUT_MS);
+        ParcelFileDescriptor clientEnd = host.awaitAdopted(CALLBACK_TIMEOUT_MS);
         if (clientEnd == null) {
             System.err.println("wayland-run: " + pkg
                     + " did not return a client fd (is the app updated?)");
@@ -115,16 +126,23 @@ public final class WaylandRun {
         Os.fcntlInt(clientEnd.getFileDescriptor(), F_SETFD, 0);
         int fd = clientEnd.getFd();
 
-        ProcessBuilder pb = new ProcessBuilder(args);
-        pb.environment().put("WAYLAND_SOCKET", Integer.toString(fd));
-        pb.inheritIO();
-        Process child = pb.start();
+        // execve keeps the fd and the std streams, and replaces this
+        // process, so there is no parent end left to hold the socket open.
+        Map<String, String> env = new HashMap<>(System.getenv());
+        env.put("WAYLAND_SOCKET", Integer.toString(fd));
+        String[] envp = new String[env.size()];
+        int i = 0;
+        for (Map.Entry<String, String> e : env.entrySet()) {
+            envp[i++] = e.getKey() + "=" + e.getValue();
+        }
 
-        // The child has its own copy after fork/exec. Drop ours so the
-        // compositor sees EOF as soon as the client closes its end.
-        clientEnd.close();
-
-        System.exit(child.waitFor());
+        String exe = resolve(args[0]);
+        try {
+            Os.execve(exe, args, envp);
+        } catch (Exception e) {
+            System.err.println("wayland-run: cannot exec " + exe + ": " + e);
+            System.exit(1);
+        }
     }
 
     /**
@@ -138,12 +156,18 @@ public final class WaylandRun {
      */
     private static final class HostBinder extends Binder {
         private final Object lock = new Object();
-        private final CountDownLatch ready = new CountDownLatch(1);
+        private final CountDownLatch adopted = new CountDownLatch(1);
         private ParcelFileDescriptor clientEnd;
 
         @Override
         protected boolean onTransact(int code, Parcel data, Parcel reply, int flags)
                 throws RemoteException {
+            if (code == TRANSACTION_CLIENT_ADOPTED) {
+                // One-way; the app sent this after openClient() returned, so
+                // the reply below has already been delivered. Safe to exec.
+                adopted.countDown();
+                return true;
+            }
             if (code != TRANSACTION_OPEN_CLIENT) {
                 return super.onTransact(code, data, reply, flags);
             }
@@ -152,7 +176,7 @@ public final class WaylandRun {
             ParcelFileDescriptor[] pair;
             try {
                 pair = ParcelFileDescriptor.createSocketPair();
-            } catch (IOException e) {
+            } catch (Exception e) {
                 reply.writeException(e);
                 return true;
             }
@@ -174,13 +198,12 @@ public final class WaylandRun {
             pair[1].writeToParcel(reply, 0);
             // Binder dup'd the fd into the reply; drop our copy.
             closeQuietly(pair[1]);
-
-            ready.countDown();
             return true;
         }
 
-        ParcelFileDescriptor await(long timeoutMs) throws InterruptedException {
-            if (!ready.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+        /** Blocks until the app confirms the compositor end is adopted. */
+        ParcelFileDescriptor awaitAdopted(long timeoutMs) throws InterruptedException {
+            if (!adopted.await(timeoutMs, TimeUnit.MILLISECONDS)) {
                 return null;
             }
             synchronized (lock) {
@@ -192,8 +215,29 @@ public final class WaylandRun {
     private static void closeQuietly(ParcelFileDescriptor pfd) {
         try {
             pfd.close();
-        } catch (IOException ignored) {
+        } catch (Exception ignored) {
         }
+    }
+
+    /** PATH lookup, because execve() does not search it. */
+    private static String resolve(String name) {
+        if (name.indexOf('/') >= 0) {
+            return name;
+        }
+        String path = System.getenv("PATH");
+        if (path == null || path.isEmpty()) {
+            path = "/system/bin:/system/xbin";
+        }
+        for (String dir : path.split(":")) {
+            if (dir.isEmpty()) {
+                dir = ".";
+            }
+            File f = new File(dir, name);
+            if (f.isFile() && f.canExecute()) {
+                return f.getPath();
+            }
+        }
+        return name;
     }
 
     /**

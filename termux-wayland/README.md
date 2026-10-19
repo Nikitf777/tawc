@@ -33,6 +33,20 @@ compositor end to the app, and keeps the client end for the child.
 before invoking `main()`, so the launcher can receive that call while its
 main thread waits.
 
+The client cannot then be spawned with `java.lang.ProcessBuilder`.
+Android's `UNIXProcess` child calls `closeDescriptors()` before `exec`,
+which closes **every fd ≥ 4** (`FAIL_FILENO + 1`, where
+`FAIL_FILENO = STDERR_FILENO + 1`); the inherited socket never reaches
+the client. The launcher `execve`s itself into the client instead:
+`Os.execve` replaces the process image and keeps every descriptor
+without `FD_CLOEXEC`, which is exactly the client's inherited socket.
+
+`execve` destroys this process's Binder threads, so the app signals when
+the fd is safe with a second, one-way transaction
+(`TRANSACTION_CLIENT_ADOPTED`). The launcher only `execve`s after that.
+The signal is sent after `openClient()` has returned, so the fd reply
+was already delivered and cannot be cut off mid-transaction.
+
 ```
 Termux (wayland-run)                                TAWC app
 ────────────────────                                ────────
@@ -43,8 +57,10 @@ Bundle{host binder} ── startService(Intent) ──▶ ExternalWaylandService
      │  (synchronous Binder call; socketpair created here)
      ├── returns compositor end ─────────────────▶ detachFd()
      │                                             nativeAdoptClientFd()
+     │  clientAdopted()  ◀─────────────────────────────┘
+     │  (one-way; fd reply already delivered)
      └── keeps client end
-WAYLAND_SOCKET=fd ──▶ exec(client)                 insert_client()
+WAYLAND_SOCKET=fd ──▶ execve(client)               insert_client()
 ```
 
 ### Why it is a DEX, not a shell script or a C binary
@@ -60,14 +76,16 @@ difference — and the compile-only stubs keep the build to a JDK plus
 ## Required app change
 
 `ExternalWaylandService.onBind`/AIDL cannot be reached from Termux (no
-bind), but `onStartCommand` can. It reads the host binder and calls the
-same `openClient()` from the app side (the plan's
-`nativeAdoptClientFd` JNI is reused as-is):
+bind), but `onStartCommand` can. It reads the host binder, calls the
+same `openClient()` from the app side (the plan's `nativeAdoptClientFd`
+JNI is reused as-is), then sends the one-way adopted signal:
 
 ```kotlin
 companion object {
     const val EXTRA_HOST = "me.phie.tawc.extra.HOST"
     const val KEY_HOST = "host"
+    // WaylandRun's TRANSACTION_CLIENT_ADOPTED (openClient is 1).
+    const val TRANSACTION_CLIENT_ADOPTED = 2
 }
 
 override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -80,6 +98,15 @@ override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
             }
         } catch (e: Exception) {
             Log.w("tawc", "external Wayland: host callback failed", e)
+        } finally {
+            // Lets the launcher execve() the client now that the fd reply
+            // has been delivered and native holds the compositor end.
+            val data = Parcel.obtain()
+            try {
+                host.transact(TRANSACTION_CLIENT_ADOPTED, data, null, IBinder.FLAG_ONEWAY)
+            } finally {
+                data.recycle()
+            }
         }
     } else {
         Log.w("tawc", "ExternalWaylandService started without $EXTRA_HOST")
@@ -136,7 +163,10 @@ Only `src/` classes are dexed; the stubs are a compile-only classpath.
   only help callers that have a manifest, which `app_process` does not.
 - The client must connect with `wl_display_connect(NULL)` so
   `libwayland-client` honours `WAYLAND_SOCKET`.
-- The compositor end is dup'd into the Binder reply; the launcher closes
-  its copy and the app detaches its copy into native. When the client
-  exits, the launcher's copy is already closed, so the compositor sees
-  EOF.
+- `execve` does not search `PATH`, so the launcher resolves the command
+  itself (absolute path or a `PATH` walk). It inherits the Termux
+  environment plus `WAYLAND_SOCKET`.
+- The compositor end is dup'd into the Binder reply; the launcher keeps
+  the client end (it is the client process after `execve`) and the app
+  detaches its copy into native. When the client exits its fd closes, so
+  the compositor sees EOF.

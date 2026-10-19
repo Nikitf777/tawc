@@ -1,8 +1,10 @@
 # External Wayland clients over Binder fd passing
 
 > **Status:** app side implemented (AIDL + `ExternalWaylandService` + manifest +
-> `nativeAdoptClientFd` + `event_loop` source + `aidl = true`). Termux-side
-> `wayland-run` helper and on-device verification are still pending. See
+> `nativeAdoptClientFd` + `event_loop` source + `aidl = true`), including the
+> `onStartCommand` fd intake the Termux launcher uses. The Termux-side
+> `wayland-run` helper is in [`termux-wayland/`](../termux-wayland/); on-device
+> verification is still pending. See
 > [../notes/android.md](../notes/android.md) ("Wayland Socket Sharing") for the
 > as-built summary.
 
@@ -423,9 +425,9 @@ feature; see `termux-wayland/README.md`.
 
 1. Build the debug APK (`scripts/build-app.sh`, or
    `./gradlew :app:assembleDebug`) and install it.
-2. Start a client through the helper. The first `openClient()` may race
-   compositor startup; the fd is queued and the client blocks in
-   `wl_display_connect` until the display exists.
+2. Start a client through the helper. The fd is queued until the
+   compositor's event loop runs; the client blocks in `wl_display_connect`
+   until the display exists.
 3. Verify:
    - `wayland-info` prints `wl_compositor`, `wl_shm`, `xdg_wm_base`,
      `wl_seat`, `wl_output`.
@@ -433,7 +435,7 @@ feature; see `termux-wayland/README.md`.
    - `adb logcat -s tawc-native` has no `insert_client failed`.
    - `nativeQueryState` reports one client.
 4. For a no-Termux smoke test, run the same helper from `adb shell`
-   (uid 2000); `BuildConfig.DEBUG` allows `com.android.shell`.
+   (uid 2000); the `startService` path does not check the caller.
 
 ## Risks and notes
 
@@ -451,6 +453,11 @@ feature; see `termux-wayland/README.md`.
   filters `getPackagesForUid` by package visibility, the manifest declares
   `<queries>` for `com.termux` (and `com.android.shell` for the debug
   path); without it the allowlist silently denies everyone.
+- **The `startService` path is ungated.** `onStartCommand` cannot see the
+  original caller (AMS is the Binder caller) and `getCallingUid()` is our
+  own uid, so any app may start the exported service and hand over an fd.
+  The AIDL `openClient()` path keeps the uid check; this is a dev-only
+  trade-off until the fd arrives with a caller identity (follow-up below).
 - **`onCreate` does the one-time asset extraction on the main thread.**
   `ensureActivation` (xkb, libhybris, Xwayland) can take seconds on the
   first bind in a fresh process. Kept synchronous so the first

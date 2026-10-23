@@ -1,9 +1,9 @@
 #!/data/data/com.termux/files/usr/bin/sh
 # Run a Wayland client as a window inside the TAWC compositor.
 #
-#   termux-wayland/wayland-run foot
-#   termux-wayland/wayland-run weston-simple-shm
-#   TAWC_PACKAGE=me.phie.tawc  termux-wayland/wayland-run foot   # release build
+#   termux-wayland/tawc-run foot
+#   termux-wayland/tawc-run weston-simple-shm
+#   TAWC_PACKAGE=me.phie.tawc  termux-wayland/tawc-run foot   # release build
 #
 # The jar is used from this directory (built on demand), so nothing has to
 # be copied into $PREFIX. Point TAWC_WAYLAND_JAR at another jar to override.
@@ -17,13 +17,13 @@ else
     jar="$here/tawc-wayland.jar"
     if [ -d "$here/src" ] && { [ ! -f "$jar" ] || \
         [ -n "$(find "$here/src" "$here/stubs" -name '*.java' -newer "$jar" 2>/dev/null)" ]; }; then
-        echo "wayland-run: building $jar" >&2
+        echo "tawc-run: building $jar" >&2
         bash "$here/build.sh" >&2
     fi
 fi
 
 if [ ! -f "$jar" ]; then
-    echo "wayland-run: no jar at $jar" >&2
+    echo "tawc-run: no jar at $jar" >&2
     exit 1
 fi
 
@@ -33,7 +33,24 @@ if [ -w "$jar" ]; then
 fi
 
 export CLASSPATH="$jar"
-# Keep the bionic app_process from pulling in Termux's linker environment.
+
+# The system app_process must not see a Termux LD_LIBRARY_PATH: it would try
+# to load bionic's dependencies from Termux and fail.  Keep the caller's
+# linker environment for the client instead.  The Java launcher restores
+# these values immediately before execve(), so wrapping either this script or
+# the client works.
+if [ "${LD_LIBRARY_PATH+x}" = x ]; then
+    TAWC_CLIENT_LD_LIBRARY_PATH=$LD_LIBRARY_PATH
+    export TAWC_CLIENT_LD_LIBRARY_PATH
+else
+    unset TAWC_CLIENT_LD_LIBRARY_PATH
+fi
+if [ "${LD_PRELOAD+x}" = x ]; then
+    TAWC_CLIENT_LD_PRELOAD=$LD_PRELOAD
+    export TAWC_CLIENT_LD_PRELOAD
+else
+    unset TAWC_CLIENT_LD_PRELOAD
+fi
 unset LD_LIBRARY_PATH LD_PRELOAD
 
 exec /system/bin/app_process -Xnoimage-dex2oat / \

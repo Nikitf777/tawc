@@ -44,7 +44,7 @@ import java.util.concurrent.TimeUnit;
  * fd. It does that only after the app signals that the compositor end is
  * adopted, because execve destroys this process's Binder threads.
  *
- * Usage: {@code wayland-run <command> [args...]}
+ * Usage: {@code tawc-run <command> [args...]}
  */
 public final class WaylandRun {
 
@@ -82,7 +82,7 @@ public final class WaylandRun {
 
     public static void main(String[] args) throws Exception {
         if (args.length == 0) {
-            System.err.println("usage: wayland-run <command> [args...]");
+            System.err.println("usage: tawc-run <command> [args...]");
             System.exit(2);
         }
 
@@ -107,13 +107,13 @@ public final class WaylandRun {
             while (cause instanceof InvocationTargetException && cause.getCause() != null) {
                 cause = cause.getCause();
             }
-            System.err.println("wayland-run: cannot start " + pkg + "/" + SERVICE_CLASS
+            System.err.println("tawc-run: cannot start " + pkg + "/" + SERVICE_CLASS
                     + ": " + cause);
             System.exit(1);
             return;
         }
         if (started == null) {
-            System.err.println("wayland-run: " + pkg + "/" + SERVICE_CLASS
+            System.err.println("tawc-run: " + pkg + "/" + SERVICE_CLASS
                     + " not found or not exported");
             System.exit(1);
         }
@@ -121,12 +121,12 @@ public final class WaylandRun {
         ParcelFileDescriptor clientEnd = host.awaitSignal(CALLBACK_TIMEOUT_MS);
         String refused = host.refusedReason();
         if (refused != null) {
-            System.err.println("wayland-run: TAWC refused to connect this app: " + refused);
-            System.err.println("wayland-run: allow it in TAWC Settings -> External apps");
+            System.err.println("tawc-run: TAWC refused to connect this app: " + refused);
+            System.err.println("tawc-run: allow it in TAWC Settings -> External apps");
             System.exit(1);
         }
         if (clientEnd == null) {
-            System.err.println("wayland-run: " + pkg
+            System.err.println("tawc-run: " + pkg
                     + " did not return a client fd (is the app updated?)");
             System.exit(1);
         }
@@ -139,6 +139,8 @@ public final class WaylandRun {
         // execve keeps the fd and the std streams, and replaces this
         // process, so there is no parent end left to hold the socket open.
         Map<String, String> env = new HashMap<>(System.getenv());
+        restoreLinkerEnv(env, "TAWC_CLIENT_LD_LIBRARY_PATH", "LD_LIBRARY_PATH");
+        restoreLinkerEnv(env, "TAWC_CLIENT_LD_PRELOAD", "LD_PRELOAD");
         env.put("WAYLAND_SOCKET", Integer.toString(fd));
         String[] envp = new String[env.size()];
         int i = 0;
@@ -150,7 +152,7 @@ public final class WaylandRun {
         try {
             Os.execve(exe, args, envp);
         } catch (Exception e) {
-            System.err.println("wayland-run: cannot exec " + exe + ": " + e);
+            System.err.println("tawc-run: cannot exec " + exe + ": " + e);
             System.exit(1);
         }
     }
@@ -240,6 +242,21 @@ public final class WaylandRun {
             synchronized (lock) {
                 return clientEnd;
             }
+        }
+    }
+
+    /**
+     * Restores a linker variable that tawc-run temporarily removed so the
+     * system app_process could start with a clean environment.  The saved
+     * variable is internal and must not leak into the client.
+     */
+    private static void restoreLinkerEnv(Map<String, String> env,
+                                         String savedName, String realName) {
+        String value = env.remove(savedName);
+        if (value != null) {
+            env.put(realName, value);
+        } else {
+            env.remove(realName);
         }
     }
 

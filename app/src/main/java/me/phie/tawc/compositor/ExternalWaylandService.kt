@@ -83,14 +83,14 @@ class ExternalWaylandService : Service() {
     }
 
     /**
-     * Termux's `wayland-run` cannot bindService: it is an `app_process`
+     * Termux's `tawc-run` cannot bindService: it is an `app_process`
      * process, and AMS rejects binds from callers without a process
      * record. It starts this service with a Binder token instead, then
      * calls the existing `IExternalWayland.openClient()` on it. That
      * synchronous Binder call is what carries the fd; an Intent cannot
      * (AMS rejects `startService` intents with file descriptors).
      *
-     * `wayland-run` then execve()s itself into the client, which destroys
+     * `tawc-run` then execve()s itself into the client, which destroys
      * its Binder threads. Before it does that it waits for
      * [TRANSACTION_CLIENT_ADOPTED]; sending that only after the fd is
      * handled guarantees the reply was already delivered.

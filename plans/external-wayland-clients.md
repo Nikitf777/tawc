@@ -3,7 +3,7 @@
 > **Status:** app side implemented (AIDL + `ExternalWaylandService` + manifest +
 > `nativeAdoptClientFd` + `event_loop` source + `aidl = true`), including the
 > `onStartCommand` Binder-callback intake the Termux launcher uses. The Termux-side
-> `wayland-run` helper is in [`termux-wayland/`](../termux-wayland/); on-device
+> `tawc-run` helper is in [`termux-wayland/`](../termux-wayland/); on-device
 > verification is still pending. See
 > [../notes/android.md](../notes/android.md) ("Wayland Socket Sharing") for the
 > as-built summary.
@@ -54,7 +54,7 @@ socketpair. The compositor keeps doing exactly what it does for the
 in-container clients; the only new input is "here is a connected stream,
 adopt it".
 
-Scope: a launcher helper per client (e.g. `wayland-run foot`). A
+Scope: a launcher helper per client (e.g. `tawc-run foot`). A
 long-lived `wayland-0` path inside Termux is a follow-up (see the end).
 
 ## App changes (the actual patch)
@@ -406,7 +406,7 @@ If AIDL is not already on, add it in `app/build.gradle.kts`:
 ## Termux side (implemented in `termux-wayland/`)
 
 A small `app_process` program, the same shape as `am`. Source, build
-script, and `wayland-run` wrapper live in `termux-wayland/`.
+script, and `tawc-run` wrapper live in `termux-wayland/`.
 
 **`bindService` cannot be used from here.** `app_process` is not an app
 process, so AMS has no record for the caller and
@@ -490,7 +490,7 @@ callback.**
    display transport. The client must call `wl_display_connect(NULL)`;
    all normal toolkits do.
 
-`WAYLAND_SOCKET` only works for one client, so `wayland-run <cmd>` is
+`WAYLAND_SOCKET` only works for one client, so `tawc-run <cmd>` is
 the interface. Build with `termux-wayland/build.sh` (`javac` against
 `android.jar` or the bundled stubs, plus `d8`), `chmod 0400` the dex
 container (Android 14 rejects executing writable dex), and run through

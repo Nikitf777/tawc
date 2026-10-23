@@ -1,7 +1,7 @@
 # termux-wayland
 
 Termux-side launcher that opens a Wayland client window inside the TAWC
-compositor (`wayland-run foot`). Target app: the debug build
+compositor (`tawc-run foot`). Target app: the debug build
 `me.phie.tawc.dev` unless `TAWC_PACKAGE=me.phie.tawc` is set.
 
 ## Why it works this way
@@ -57,7 +57,7 @@ app never sends a refusal and an older launcher would otherwise wait out
 its whole timeout.
 
 ```
-Termux (wayland-run)                                TAWC app
+Termux (tawc-run)                                TAWC app
 ────────────────────                                ────────
 Bundle{host binder} ── startService(Intent) ──▶ ExternalWaylandService
      ▲                                            onStartCommand()
@@ -135,13 +135,13 @@ reason string before that `finally` block.)
 
 ## Build and run
 
-`wayland-run` runs straight from this directory. It uses the
+`tawc-run` runs straight from this directory. It uses the
 `tawc-wayland.jar` beside it and rebuilds it when the sources are newer,
 so there is no install step:
 
 ```sh
-termux-wayland/wayland-run foot
-termux-wayland/wayland-run weston-simple-shm
+termux-wayland/tawc-run foot
+termux-wayland/tawc-run weston-simple-shm
 ```
 
 `TAWC_PACKAGE=me.phie.tawc` selects the release app instead of the dev
@@ -169,8 +169,8 @@ Only `src/` classes are dexed; the stubs are a compile-only classpath.
 
 ## Notes and limits
 
-- One client per `wayland-run`; `WAYLAND_SOCKET` is single-shot.
-- A refused caller gets `wayland-run: TAWC refused to connect this app:
+- One client per `tawc-run`; `WAYLAND_SOCKET` is single-shot.
+- A refused caller gets `tawc-run: TAWC refused to connect this app:
   <reason>` and exit code 1; nothing is `execve`d.
 - `onStartCommand` cannot see the original caller uid: the start is
   delivered by AMS, so `Binder.getCallingUid()` is TAWC itself. The app
@@ -183,6 +183,11 @@ Only `src/` classes are dexed; the stubs are a compile-only classpath.
 - `execve` does not search `PATH`, so the launcher resolves the command
   itself (absolute path or a `PATH` walk). It inherits the Termux
   environment plus `WAYLAND_SOCKET`.
+- `app_process` must not see Termux's `LD_LIBRARY_PATH`/`LD_PRELOAD`, so
+  `tawc-run` removes them before starting it and saves the values. The Java
+  launcher restores them for the client immediately before `execve`. This
+  makes the wrapper order irrelevant: the client sees the caller's linker
+  environment whether `tawc-run` is inside or outside another wrapper.
 - The compositor end is dup'd into the Binder reply; the launcher keeps
   the client end (it is the client process after `execve`) and the app
   detaches its copy into native. When the client exits its fd closes, so

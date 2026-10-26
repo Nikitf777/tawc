@@ -25,7 +25,9 @@ use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, WaylandSurfaceTexture,
 };
 use smithay::backend::renderer::element::AsRenderElements;
-use smithay::backend::renderer::{buffer_type, Bind, BufferType, Color32F, Frame, Renderer};
+use smithay::backend::renderer::{
+    buffer_type, Bind, BufferType, Color32F, Frame, ImportDma, Renderer,
+};
 use smithay::backend::renderer::utils::{
     draw_render_elements, CommitCounter, DamageSet, OpaqueRegions,
 };
@@ -75,6 +77,7 @@ const TINT_EDGE_FADE: f32 = 0.10;
 enum SurfaceKind {
     Shm,
     Wlegl(BufferOrigin),
+    Dmabuf,
 }
 
 impl SurfaceKind {
@@ -84,12 +87,117 @@ impl SurfaceKind {
     fn tint_color(self) -> [f32; 3] {
         match self {
             SurfaceKind::Shm => [1.0, 0.0, 1.0], // magenta — software fallback path
+            SurfaceKind::Dmabuf => [1.0, 0.5, 0.0], // orange — zwp_linux_dmabuf_v1
             SurfaceKind::Wlegl(BufferOrigin::Hybris) => [0.5, 1.0, 0.0], // lime — libhybris/AHB
             #[cfg(feature = "gfxstream")]
             SurfaceKind::Wlegl(BufferOrigin::Gfxstream) => [0.0, 1.0, 1.0], // cyan — gfxstream/AHB
         }
     }
 
+}
+
+/// Which EGL/GLES stack this compositor run uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RendererKind {
+    /// System/vendor EGL bound to the Activity's ANativeWindow.
+    Vendor,
+    /// Private Mesa surfaceless EGL + Zink/Turnip, offscreen output.
+    Mesa,
+}
+
+impl RendererKind {
+    pub fn is_mesa(self) -> bool {
+        self == RendererKind::Mesa
+    }
+}
+
+/// Pick the server renderer and, for Mesa, arm the private-library env vars
+/// before any EGL/Vulkan code runs. Defaults to Mesa on aarch64 Adreno/KGSL
+/// devices; any missing asset or unsupported device falls back to vendor.
+fn debug_server_renderer_property() -> Option<String> {
+    #[cfg(target_os = "android")]
+    unsafe {
+        use std::ffi::{CStr, CString};
+        use std::os::raw::{c_char, c_int};
+        extern "C" {
+            fn __system_property_get(name: *const c_char, value: *mut c_char) -> c_int;
+        }
+        let name = CString::new("debug.tawc.server_renderer").ok()?;
+        let mut value = [0u8; 92];
+        if __system_property_get(name.as_ptr(), value.as_mut_ptr()) > 0 {
+            return Some(CStr::from_ptr(value.as_ptr()).to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+pub fn select_renderer() -> RendererKind {
+    // Smithay's EGL loader binds one libEGL per process, so the renderer
+    // choice is fixed for the process lifetime. Changing the debug property
+    // requires force-stopping the app, not just restarting the compositor.
+    static SELECTED: std::sync::OnceLock<RendererKind> = std::sync::OnceLock::new();
+    *SELECTED.get_or_init(select_renderer_inner)
+}
+
+fn select_renderer_inner() -> RendererKind {
+    let requested = debug_server_renderer_property()
+        .or_else(|| std::env::var("TAWC_SERVER_RENDERER").ok())
+        .unwrap_or_default();
+    if requested == "vendor" {
+        info!("server renderer: vendor (explicit TAWC_SERVER_RENDERER=vendor)");
+        return RendererKind::Vendor;
+    }
+
+    if std::env::consts::ARCH != "aarch64" {
+        info!("server renderer: vendor (server Mesa is aarch64-only)");
+        return RendererKind::Vendor;
+    }
+
+    let dir = std::env::var("TAWC_MESA_SERVER_DIR").unwrap_or_else(|_| {
+        format!("{}/mesa-server", crate::app_paths::get().files_dir)
+    });
+    let egl = format!("{}/libEGL.so", dir);
+    let gles = format!("{}/libGLESv2.so", dir);
+    let vk_shim = format!("{}/libvulkan_tawc.so", dir);
+    let turnip = format!("{}/libvulkan_freedreno.so", dir);
+    for (what, path) in [
+        ("libEGL.so", &egl),
+        ("libGLESv2.so", &gles),
+        ("libvulkan_tawc.so", &vk_shim),
+        ("libvulkan_freedreno.so", &turnip),
+    ] {
+        if !std::path::Path::new(path).is_file() {
+            info!(
+                "server renderer: vendor (Mesa asset {} missing at {})",
+                what, path
+            );
+            return RendererKind::Vendor;
+        }
+    }
+
+    // Adreno/KGSL gate. The compositor process can open this node on the
+    // supported devices; no /dev/dri is required for the surfaceless path.
+    if std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kgsl-3d0")
+        .is_err()
+    {
+        info!("server renderer: vendor (/dev/kgsl-3d0 unavailable)");
+        return RendererKind::Vendor;
+    }
+
+    std::env::set_var("TAWC_EGL_LIB", &egl);
+    std::env::set_var("TAWC_GLES_LIB", &gles);
+    std::env::set_var("TAWC_VULKAN_LIB", &vk_shim);
+    std::env::set_var("TAWC_TURNIP_ICD", &turnip);
+    std::env::set_var("MESA_LOADER_DRIVER_OVERRIDE", "zink");
+    std::env::set_var("LIBGL_DRIVERS_PATH", &dir);
+    info!(
+        "server renderer: Mesa GLES (surfaceless Zink/Turnip) from {}",
+        dir
+    );
+    RendererKind::Mesa
 }
 
 /// GPU-side rendering state, separate from Wayland protocol state.
@@ -99,12 +207,16 @@ impl SurfaceKind {
 /// owns Wayland protocol state.
 ///
 /// `egl_surface` no longer lives here: each `OutputHost` owns its own
-/// EGLSurface bound to that Activity's `ANativeWindow`. Use
+/// EGLSurface bound to that Activity's `ANativeWindow` (vendor mode) or its
+/// ASurfaceControl/AHB output state (Mesa mode). Use
 /// `RenderState::create_egl_surface_for_window` to make a new one when an
 /// Activity registers its surface.
 pub struct RenderState {
+    pub kind: RendererKind,
     pub renderer: GlesRenderer,
-    pub importer: AhbTextureImporter,
+    /// Vendor AHB importer. `None` in Mesa mode, where input buffers are
+    /// imported from their dma-buf fds instead.
+    pub importer: Option<AhbTextureImporter>,
     /// Texture shader with a `force_opaque` uniform but no tinting. Used for
     /// every surface when `TINT_BUFFERS_BY_TYPE` is off, so no-alpha buffer
     /// formats can be drawn opaque even with the custom shader.
@@ -118,10 +230,10 @@ pub struct RenderState {
     /// cheap clone of the renderer's internal handle (Arc internally);
     /// pixel_format and config_id are immutable for the life of the context.
     pub egl_display: EGLDisplay,
-    pub egl_pixel_format: PixelFormat,
+    pub egl_pixel_format: Option<PixelFormat>,
     pub egl_config_id: *const c_void,
     /// Last so it drops after the renderer is done with the context.
-    _raw_context: RawEglContext,
+    _raw_context: Option<RawEglContext>,
 }
 
 /// `EGLContext::from_raw` leaves the context externally managed, so
@@ -141,23 +253,42 @@ impl RenderState {
     /// Create the EGL context (no surface yet — the first Activity provides
     /// one), the renderer, the AHB importer and our shaders. Leaves the
     /// context unbound so another thread can make it current.
-    fn init() -> Result<Self, String> {
-        let (raw_display, raw_config, raw_context) =
-            unsafe { crate::egl_android::create_raw_egl_context() }.map_err(|e| e.to_string())?;
-        let raw = RawEglContext { display: raw_display, context: raw_context };
-        let egl_context = unsafe { EGLContext::from_raw(raw_display, raw_config, raw_context) }
-            .map_err(|e| format!("EGLContext::from_raw: {}", e))?;
+    fn init(kind: RendererKind) -> Result<Self, String> {
+        let (egl_context, importer, raw) = match kind {
+            RendererKind::Vendor => {
+                let (raw_display, raw_config, raw_context) =
+                    unsafe { crate::egl_android::create_raw_egl_context() }
+                        .map_err(|e| e.to_string())?;
+                let raw = RawEglContext { display: raw_display, context: raw_context };
+                let egl_context =
+                    unsafe { EGLContext::from_raw(raw_display, raw_config, raw_context) }
+                        .map_err(|e| format!("EGLContext::from_raw: {}", e))?;
+                let importer = AhbTextureImporter::new()
+                    .map_err(|e| format!("Failed to load AHB importer: {}", e))?;
+                (egl_context, Some(importer), Some(raw))
+            }
+            RendererKind::Mesa => {
+                let egl_context = crate::egl_android::create_mesa_egl_context()
+                    .map_err(|e| e.to_string())?;
+                (egl_context, None, None)
+            }
+        };
 
         let egl_display = egl_context.display().clone();
-        let egl_pixel_format = egl_context.pixel_format().ok_or("No pixel format")?;
+        let egl_pixel_format = egl_context.pixel_format();
         let egl_config_id = egl_context.config_id();
+        if kind == RendererKind::Vendor && egl_pixel_format.is_none() {
+            return Err("No pixel format".into());
+        }
 
         let mut renderer = unsafe { GlesRenderer::new(egl_context) }
             .map_err(|e| format!("GlesRenderer::new: {}", e))?;
 
-        let importer = AhbTextureImporter::new()
-            .map_err(|e| format!("Failed to load AHB importer: {}", e))?;
-        info!("EGL + GlesRenderer + AHB importer ready");
+        info!(
+            "EGL + GlesRenderer ready ({:?}); dmabuf import formats: {}",
+            kind,
+            renderer.dmabuf_formats().iter().count()
+        );
 
         let plain_shader = compile_plain_shader(&mut renderer);
         let tint_shader = compile_tint_shader(&mut renderer);
@@ -167,6 +298,7 @@ impl RenderState {
             .map_err(|e| format!("EGL unbind: {}", e))?;
 
         Ok(RenderState {
+            kind,
             renderer,
             importer,
             plain_shader,
@@ -189,16 +321,34 @@ impl RenderState {
         unsafe {
             EGLSurface::new(
                 &self.egl_display,
-                self.egl_pixel_format,
+                self.egl_pixel_format.ok_or(smithay::backend::egl::EGLError::BadConfig)?,
                 self.egl_config_id,
                 native_surface,
             )
         }
     }
 
-    /// Bind a freshly-created EGLSurface onto the given host. Errors are
-    /// logged and the host's `egl_surface` is left as `None`.
-    pub fn attach_host_surface(&self, host: &mut OutputHost) {
+    /// Bind a freshly-created EGLSurface (vendor) or ASurfaceControl (Mesa)
+    /// onto the given host. Errors are logged and the host is left without a
+    /// render target.
+    pub fn attach_host_surface(&mut self, host: &mut OutputHost) {
+        if self.kind.is_mesa() {
+            match crate::mesa::MesaPresent::new(host.native_window()) {
+                Some(present) => {
+                    host.mesa_present = Some(present);
+                    info!(
+                        "Created Mesa ASurfaceControl for host {} ({}x{})",
+                        host.activity_id, host.physical_size.w, host.physical_size.h
+                    );
+                }
+                None => error!(
+                    "Failed to create Mesa ASurfaceControl for host {}",
+                    host.activity_id
+                ),
+            }
+            return;
+        }
+
         match self.create_egl_surface_for_window(host.native_window()) {
             Ok(surf) => {
                 host.egl_surface = Some(surf);
@@ -233,12 +383,12 @@ pub struct LazyRenderState {
 }
 
 impl LazyRenderState {
-    pub fn spawn() -> Self {
+    pub fn spawn(kind: RendererKind) -> Self {
         // Moving the `RenderState` across threads relies on `init` leaving
         // the EGL context unbound; nothing else in it is thread-affine.
         let pending = std::thread::Builder::new()
             .name("gl-init".into())
-            .spawn(RenderState::init)
+            .spawn(move || RenderState::init(kind))
             .expect("spawn gl-init thread");
         Self { ready: None, pending: Some(pending) }
     }
@@ -518,9 +668,8 @@ fn surface_kind_for_buffer(buffer: &WlBuffer) -> (SurfaceKind, bool) {
         return (SurfaceKind::Wlegl(data.origin), !data.has_alpha);
     }
     match buffer_type(buffer) {
-        Some(BufferType::Shm) => {
-            (SurfaceKind::Shm, false)
-        }
+        Some(BufferType::Shm) => (SurfaceKind::Shm, false),
+        Some(BufferType::Dma) => (SurfaceKind::Dmabuf, false),
         _ => (SurfaceKind::Shm, false),
     }
 }
@@ -679,11 +828,6 @@ pub fn render_frame(
     state: &mut TawcState,
     host: &mut OutputHost,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let egl_surface = host
-        .egl_surface
-        .as_mut()
-        .expect("render_frame called for host without EGLSurface");
-
     let output_size = host.physical_size;
     let scale = state.output_scale;
     let screen_w = output_size.w;
@@ -729,6 +873,41 @@ pub fn render_frame(
         }
     }
 
+    if render.kind.is_mesa() {
+        let present = host
+            .mesa_present
+            .as_mut()
+            .ok_or("render_frame called for Mesa host without ASurfaceControl")?;
+        present.ensure_size(&mut render.renderer, screen_w, screen_h)?;
+        let Some(index) = present.acquire() else {
+            // Both AHBs are still held by SurfaceFlinger; skip this frame.
+            return Ok(());
+        };
+
+        {
+            let mesa_target = present
+                .target_mut(index)
+                .ok_or("Mesa target disappeared")?;
+            let mut target = render.renderer.bind(&mut mesa_target.texture)?;
+            let mut frame = render
+                .renderer
+                .render(&mut target, output_size, Transform::Normal)?;
+
+            frame.clear(BACKGROUND_COLOR, &[Rectangle::from_size(output_size)])?;
+            draw_elements(&elements, &mut frame, scale, screen_w, screen_h)?;
+            let _ = frame.finish()?;
+
+            let pixels = crate::mesa::read_pixels(&mut render.renderer, screen_w, screen_h)?;
+            drop(target);
+            present.present(index, &pixels, screen_w, screen_h)?;
+        }
+        return Ok(());
+    }
+
+    let egl_surface = host
+        .egl_surface
+        .as_mut()
+        .ok_or("render_frame called for vendor host without EGLSurface")?;
     let mut target = render.renderer.bind(egl_surface)?;
     let mut frame = render
         .renderer

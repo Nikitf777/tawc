@@ -1,0 +1,28 @@
+diff --git a/src/backend/egl/ffi.rs b/src/backend/egl/ffi.rs
+index c99b600fa..4538e9e68 100644
+--- a/src/backend/egl/ffi.rs
++++ b/src/backend/egl/ffi.rs
+@@ -145,11 +145,18 @@ pub mod egl {
+     use std::sync::{LazyLock, Once};
+ 
+     pub static LIB: LazyLock<Library> = LazyLock::new(|| {
+-        #[cfg(target_os = "android")]
+-        let lib_name = "libEGL.so";
+-        #[cfg(not(target_os = "android"))]
+-        let lib_name = "libEGL.so.1";
+-        unsafe { Library::new(lib_name) }.expect("Failed to load LibEGL")
++        // tawc: allow the compositor to load an app-private Mesa libEGL
++        // instead of the system/vendor one. Must be set before the first
++        // EGL call; vendor mode leaves it unset.
++        let lib_name = std::env::var("TAWC_EGL_LIB").unwrap_or_else(|_| {
++            #[cfg(target_os = "android")]
++            { "libEGL.so".to_string() }
++            #[cfg(not(target_os = "android"))]
++            { "libEGL.so.1".to_string() }
++        });
++        unsafe { Library::new(&lib_name) }.unwrap_or_else(|e| {
++            panic!("Failed to load LibEGL from {}: {}", lib_name, e)
++        })
+     });
+ 
+     pub static LOAD: Once = Once::new();

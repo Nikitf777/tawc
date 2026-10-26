@@ -333,6 +333,7 @@ class CompositorService : Service() {
             // here before any rootfs entry means the copy always sees a
             // complete tree. Idempotent on the same versionCode.
             ensureLibhybrisExtracted(app)
+            ensureMesaServerExtracted(app)
 
             // Xwayland's exec'ables and runtime libs ride in the APK as
             // `jniLibs/<abi>/lib{xwayland,xkbcomp,*}.so`, where the OS
@@ -403,6 +404,8 @@ class CompositorService : Service() {
         private val MESA_GFXSTREAM_EXTRACT_LOCK = Any()
         /** Lock for [ensureMesaZinkExtracted] — see method KDoc. */
         private val MESA_ZINK_EXTRACT_LOCK = Any()
+        /** Lock for [ensureMesaServerExtracted] — see method KDoc. */
+        private val MESA_SERVER_EXTRACT_LOCK = Any()
 
         /**
          * Stamp value written to `<destDir>/.version` to gate
@@ -727,6 +730,74 @@ class CompositorService : Service() {
             atomicReplaceDir(stagingDir, destDir)
             File(destDir, ".version").writeText(currentStamp)
             Log.i(TAG, "Extracted mesa-zink ($abi) to $destDir")
+            return true
+        }
+
+        /**
+         * Extract `assets/mesa-server/<abi>/mesa-server.tar` into
+         * `<filesDir>/mesa-server/`. This is the compositor's private Mesa
+         * EGL/GLES+Zink stack, Turnip ICD and Vulkan loader shim. The Rust
+         * side loads libEGL by absolute path (`TAWC_EGL_LIB`) so it never
+         * shadows the system libEGL used by the vendor renderer.
+         */
+        fun ensureMesaServerExtracted(context: Context): Boolean = synchronized(MESA_SERVER_EXTRACT_LOCK) {
+            val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: return false
+            if (abi != "arm64-v8a") return false
+            val assetPath = "mesa-server/$abi/mesa-server.tar"
+            val available = try {
+                context.assets.open(assetPath).close()
+                true
+            } catch (_: java.io.IOException) {
+                false
+            }
+            if (!available) {
+                logMissingAssetOnce(
+                    "mesa-server",
+                    "No server Mesa asset shipped for ABI $abi; using vendor renderer",
+                )
+                return false
+            }
+
+            val destDir = File(context.filesDir, "mesa-server")
+            val currentStamp = currentExtractStamp(context)
+            if (!isStampStale("mesa-server", destDir, currentStamp)) {
+                return true
+            }
+
+            val stagingDir = File(context.filesDir, "mesa-server.new")
+            stagingDir.deleteRecursively()
+            stagingDir.mkdirs()
+            val stagingReal = stagingDir.canonicalFile
+            val stagingPrefix = stagingReal.absolutePath + File.separator
+            context.assets.open(assetPath).use { raw ->
+                TarArchiveInputStream(raw).use { tar ->
+                    while (true) {
+                        val entry = tar.nextEntry ?: break
+                        val outFile = File(stagingDir, entry.name).canonicalFile
+                        val abs = outFile.absolutePath
+                        if (abs != stagingReal.absolutePath && !abs.startsWith(stagingPrefix)) {
+                            throw java.io.IOException("mesa-server tar entry escapes staging: ${entry.name}")
+                        }
+                        when {
+                            entry.isDirectory -> outFile.mkdirs()
+                            entry.isSymbolicLink -> {
+                                outFile.parentFile?.mkdirs()
+                                Os.symlink(entry.linkName, outFile.absolutePath)
+                            }
+                            else -> {
+                                outFile.parentFile?.mkdirs()
+                                outFile.outputStream().use { out -> tar.copyTo(out) }
+                                if ((entry.mode and 0b001_001_001) != 0) {
+                                    outFile.setExecutable(true, false)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            atomicReplaceDir(stagingDir, destDir)
+            File(destDir, ".version").writeText(currentStamp)
+            Log.i(TAG, "Extracted mesa-server ($abi) to $destDir")
             return true
         }
 

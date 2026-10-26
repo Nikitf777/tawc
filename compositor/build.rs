@@ -38,11 +38,21 @@ fn main() {
             .flag("-Wno-unused-parameter")
             .compile("tawc_wlegl_import");
 
-        // Dependencies of the C helper.
+        // AHB + ASurfaceControl helpers for the Mesa server renderer.
+        cc::Build::new()
+            .file("native/mesa_ahb.c")
+            .flag("-std=c11")
+            .flag("-Wno-unused-parameter")
+            .compile("tawc_mesa_ahb");
+
+        // Dependencies of the C helpers.
         // libhardware isn't in the NDK — we dlopen it at runtime in the helper.
         println!("cargo:rustc-link-lib=dylib=log");
         println!("cargo:rustc-link-lib=dylib=dl");
+        println!("cargo:rustc-link-lib=dylib=nativewindow");
+        println!("cargo:rustc-link-lib=dylib=android");
 
         println!("cargo:rerun-if-changed=native/wlegl_import.c");
+        println!("cargo:rerun-if-changed=native/mesa_ahb.c");
     }
 }

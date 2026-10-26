@@ -1,6 +1,10 @@
 # Mesa GLES compositor renderer + `zwp_linux_dmabuf_v1`
 
-**Status:** design, not started.
+**Status:** Part A implemented as an experimental server-side spike
+(2026-10-26). Mesa surfaceless EGL + Zink/Turnip initialises, the
+`zwp_linux_dmabuf_v1` global is advertised, and the ASurfaceControl output path
+renders. AHB input import and the full A7 matrix are not yet validated;
+Part B is not started. See [notes/mesa-renderer.md](../notes/mesa-renderer.md).
 
 Add an opt-in Mesa-based GLES renderer for the compositor. Unlike the
 vendor-GLES renderer, it can import client dma-bufs, so the compositor

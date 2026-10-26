@@ -38,8 +38,12 @@ pub struct OutputHost {
 
     /// EGLSurface bound to `native_window`. `None` while waiting for
     /// the Surface to arrive (Activity spawned but `surfaceCreated`
-    /// hasn't fired yet) or after `surfaceDestroyed`.
+    /// hasn't fired yet) or after `surfaceDestroyed`. Always `None` in
+    /// Mesa mode, where `mesa_present` owns the output instead.
     pub egl_surface: Option<EGLSurface>,
+
+    /// Mesa-mode output: ASurfaceControl + AHB ping-pong targets.
+    pub mesa_present: Option<crate::mesa::MesaPresent>,
 
     /// Physical dimensions of the SurfaceView in pixels.
     pub physical_size: Size<i32, Physical>,
@@ -79,6 +83,7 @@ impl OutputHost {
             activity_id,
             native_window,
             egl_surface: None,
+            mesa_present: None,
             physical_size: Size::from((w, h)),
             logical_size: scale.logical_size(w, h),
             foreground: false,
@@ -95,6 +100,7 @@ impl OutputHost {
     /// releases the old ANativeWindow before taking the new one.
     pub fn replace_native_window(&mut self, native_window: *mut c_void, w: i32, h: i32, scale: OutputScale) {
         self.egl_surface = None;
+        self.mesa_present = None;
         if !self.native_window.is_null() {
             unsafe { ndk_sys::ANativeWindow_release(self.native_window as *mut _) };
         }
@@ -108,6 +114,7 @@ impl OutputHost {
     /// rebind without losing its assigned toplevels.
     pub fn drop_surface(&mut self) {
         self.egl_surface = None;
+        self.mesa_present = None;
         if !self.native_window.is_null() {
             unsafe { ndk_sys::ANativeWindow_release(self.native_window as *mut _) };
             self.native_window = std::ptr::null_mut();
@@ -117,6 +124,17 @@ impl OutputHost {
     pub fn update_size(&mut self, w: i32, h: i32, scale: OutputScale) {
         self.physical_size = Size::from((w, h));
         self.logical_size = scale.logical_size(w, h);
+        // Mesa output AHBs are size-specific, but the ASurfaceControl stays
+        // valid; MesaPresent::ensure_size recreates the AHBs on next render.
+    }
+
+    /// True when this host has somewhere to present a frame.
+    pub fn has_render_target(&self) -> bool {
+        self.egl_surface.is_some()
+            || self
+                .mesa_present
+                .as_ref()
+                .is_some_and(|present| present.is_ready())
     }
 
     pub fn update_scale(&mut self, scale: OutputScale) {
@@ -129,6 +147,7 @@ impl Drop for OutputHost {
         // Drop EGLSurface first (eglDestroySurface) so the underlying
         // ANativeWindow refcount is back to 1 before we release.
         self.egl_surface = None;
+        self.mesa_present = None;
         if !self.native_window.is_null() {
             unsafe { ndk_sys::ANativeWindow_release(self.native_window as *mut _) };
             self.native_window = std::ptr::null_mut();

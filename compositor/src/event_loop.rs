@@ -1007,7 +1007,7 @@ pub fn run(
             let bound_hosts = data
                 .hosts
                 .values()
-                .filter(|h| h.egl_surface.is_some())
+                .filter(|h| h.has_render_target())
                 .count();
             let (surfaces_wlegl, surfaces_shm) = data.attached_buffer_counts();
             let x11_surfaces_with_host = data
@@ -1309,7 +1309,7 @@ fn monotonic_now() -> Duration {
 fn visible_host_renderable(data: &TawcState) -> bool {
     data.desktop_visible_host_id()
         .and_then(|id| data.hosts.get(&id))
-        .is_some_and(|host| host.egl_surface.is_some())
+        .is_some_and(|host| host.has_render_target())
 }
 
 /// How long nothing may be connected before the compositor stops. Not
@@ -1356,7 +1356,7 @@ fn render_visible_host(data: &mut TawcState) -> bool {
     let Some(host) = data.hosts.get(&id) else {
         return false;
     };
-    if host.egl_surface.is_none() {
+    if !host.has_render_target() {
         return false;
     }
 
@@ -1483,7 +1483,7 @@ fn handle_surface_event(
             info!(
                 "Host registered: {} ({}x{}) — bound={}, total hosts={}",
                 activity_id, width, height,
-                data.hosts.get(&activity_id).map(|h| h.egl_surface.is_some()).unwrap_or(false),
+                data.hosts.get(&activity_id).map(|h| h.has_render_target()).unwrap_or(false),
                 data.hosts.len(),
             );
             if render_visible_host(data) {

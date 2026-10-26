@@ -64,13 +64,15 @@ impl Dispatch<TawcGfxstream, ()> for TawcState {
                 format: _format,
             } => {
                 // GL init failed; the compositor is already stopping.
-                let Some(importer) = state.render.get().map(|r| r.importer) else {
+                let Some(render) = state.render.get() else {
                     resource.post_error(
                         tawc_gfxstream::Error::UnknownColorbuffer,
                         "renderer unavailable",
                     );
                     return;
                 };
+                let importer = render.importer;
+                let mesa = render.kind.is_mesa();
                 // SAFETY: tawc_gfxstream_lookup_ahb is a plain C entry
                 // point inside libgfxstream_backend.so. Returns a
                 // refcounted AHB on success or null on miss.
@@ -88,7 +90,7 @@ impl Dispatch<TawcGfxstream, ()> for TawcState {
                 }
                 // Adopt the AHB ref; WleglBufferData releases it when
                 // the wl_buffer is destroyed.
-                let data = WleglBufferData::from_ahb(ahb, width, height, importer);
+                let data = WleglBufferData::from_ahb(ahb, width, height, importer, mesa);
                 data_init.init(id, ExternalBufferData::new(data));
             }
             tawc_gfxstream::Request::Destroy => {

@@ -62,23 +62,25 @@ Build a throwaway server-side Mesa Zink + Turnip stack and validate the
 following on the physical Adreno device:
 
 1. Private `libEGL_mesa.so` + `libvulkan_tawc.so` (Khronos loader) +
-   `libvulkan_freedreno.so` (Turnip) load in the app process (absolute
-   paths from `nativeLibraryDir` / `filesDir`).
-2. `eglGetDisplay(EGL_DEFAULT_DISPLAY)` / `eglInitialize` with
-   `MESA_LOADER_DRIVER_OVERRIDE=zink` and the private Turnip loader
-   produces a surfaceless or pbuffer ES context. `GlesRenderer::new`
-   succeeds and reports Zink + Turnip.
+   `libvulkan_freedreno.so` (Turnip **ICD**, not the Android HAL build)
+   load in the app process (absolute paths from `nativeLibraryDir` /
+   `filesDir`).
+2. `eglGetPlatformDisplayEXT(EGL_PLATFORM_SURFACELESS_MESA, ...)` /
+   `eglInitialize` with `MESA_LOADER_DRIVER_OVERRIDE=zink` and the
+   private Turnip loader produces a surfaceless or pbuffer ES context.
+   `GlesRenderer::new` succeeds and reports Zink + Turnip. This needs
+   the no-DRM surfaceless patch (see A1); stock surfaceless requires a
+   DRM device, and `LIBGL_ALWAYS_SOFTWARE` makes Zink request a CPU
+   device.
 3. `dmabuf` import works: import a dma-buf created by Termux/Turnip
    (`VK_EXT_external_memory_dma_buf`) through Mesa's
    `EGL_EXT_image_dma_buf_import` and sample it.
 4. AHB import works: use an AHB produced by the existing
-   `android_wlegl` path and import it into Mesa. Try in order:
-   - AHB → dma-buf fd + modifier (`AHardwareBuffer_getNativeHandle` +
-     u_gralloc/`gmsm` metadata) → `EGL_EXT_image_dma_buf_import`;
-   - `EGL_ANDROID_image_native_buffer` with an `ANativeWindowBuffer`
-     constructed from `AHardwareBuffer_describe` +
-     `AHardwareBuffer_getNativeHandle` (Mesa validates
-     `common.magic`/version).
+   `android_wlegl` path and convert it to a dma-buf fd + modifier
+   (`AHardwareBuffer_getNativeHandle` + u_gralloc/`gmsm` metadata) →
+   `EGL_EXT_image_dma_buf_import`. Do not rely on Mesa's Android EGL /
+   `EGL_ANDROID_image_native_buffer`; AHB handling stays in the
+   compositor, not Mesa.
 5. Render into an AHB-backed texture and present it:
    - Target: `ASurfaceTransaction_setBuffer` on an `ASurfaceControl`
      derived from the existing `ANativeWindow`
@@ -100,34 +102,85 @@ renderer instead of GLES, or (b) Mesa Zink as a dmabuf→AHB import
 bridge with the current vendor `GlesRenderer` unchanged. Do not start
 A1–A7 until the spike proves the core.
 
+**Termux build/use check (2026-10-26).** A stock
+`-Dplatforms=android` build was attempted in Termux:
+
+- Meson setup with `-Dplatforms=android -Dandroid-stub=true
+  -Dplatform-sdk-version=35 -Dgallium-drivers=zink -Dvulkan-drivers=
+  -Degl=enabled -Dgles2=enabled -Dglvnd=disabled` succeeds.
+- The native Termux clang defaults to Android API 24. `AHardwareBuffer`
+  and `sync_file_info` are API 26+, so the build must use
+  `--target=aarch64-linux-android35` (c/cpp/link args). Link with
+  `-landroid-shmem`. Direct Python scripts such as
+  `src/compiler/isaspec/{decode,encode}.py` need
+  `termux-fix-shebang` (or an equivalent wrapper).
+- `libEGL.so`, `libGLESv2.so`, `libgallium_dri.so`, and the Android
+  Turnip HAL `libvulkan_freedreno.so` build successfully.
+- **Runtime:** the Android EGL platform (`eglGetDisplay(EGL_DEFAULT_DISPLAY)`)
+  fails with `EGL_NOT_INITIALIZED` in Termux: there is no DRM/gralloc
+  display for `droid_initialize`. Stock surfaceless also fails without
+  a DRM device; `LIBGL_ALWAYS_SOFTWARE=1` only makes Zink request a CPU
+  (lavapipe) device. A no-DRM surfaceless patch is required (see A1).
+- The Android Turnip build exports the **HAL module**
+  (`vulkan-android.sym`), not `vk_icdGetInstanceProcAddr`; the Termux
+  Khronos loader cannot load it via `VK_ICD_FILENAMES`. Use the existing
+  Termux Linux Turnip ICD for Zink/dmabuf tests, or build a private ICD
+  variant with the normal `vulkan.sym` (see A1).
+- Real `libnativewindow`/AHB staging in Termux hits system
+  verneed/namespace issues; the stub AHB functions do not allocate. AHB
+  and `ASurfaceTransaction` testing belongs in the TAWC app, not Termux.
+
+Conclusion: Termux is useful for **build verification and
+surfaceless-Zink/dmabuf experiments** with an ICD Turnip, but not for
+the Android EGL/AHB path. The server design should use surfaceless EGL +
+AHB→dmabuf, not `-Dplatforms=android` EGL.
+
 ### A1. Build and package the server-side Mesa stack
 
 Keep this separate from the existing glibc chroot Mesa assets. All
 outputs target Android bionic and ride in `jniLibs/<abi>/`.
 
-- **Mesa GL (Zink)** with the pinned `deps/mesa`:
-  - `-Dplatforms=android -Dgallium-drivers=zink -Degl=enabled
-    -Dgles2=enabled -Dvulkan-drivers= -Dandroid-stub=true
-    -Dplatform-sdk-version=35` (or 36; match existing app build).
-  - `libdrm` must be available for `HAVE_LIBDRM`/`EGL_EXT_image_dma_buf_import`
-    advertisements. Build the pinned libdrm for Android or add a narrowly
-    scoped Mesa patch if a libdrm build is not workable; document the
+- **Mesa GL (Zink) — surfaceless, not Android EGL**, with the pinned
+  `deps/mesa`:
+  - `-Dplatforms=surfaceless -Dgallium-drivers=zink -Degl=enabled
+    -Dgles2=enabled -Dvulkan-drivers= -Dglvnd=disabled`.
+  - No `android-stub`, `libnativewindow`, `libhardware`, or
+    `libu_gralloc` in this build; AHB handling is compositor-side.
+  - `libdrm` must be available for `HAVE_LIBDRM` /
+    `EGL_EXT_image_dma_buf_import` advertisements. Build the pinned
+    libdrm for Android or add a narrowly scoped Mesa patch; document the
     choice.
-  - Stage `libEGL_mesa.so`, `libGLESv2_mesa.so` (name per Mesa build),
-    `libgallium-*.so`, `zink_dri.so`, and any required
-    `libglapi`/support libs.
+  - Stage `libEGL.so`, `libGLESv2.so`, the DRI driver library (the
+    build's `libgallium_dri.so`/`zink_dri.so` or versioned
+    `libgallium-*.so`, depending on Mesa), and support libs. Verify
+    which artifact actually exports the DRI extension symbols before
+    staging.
+  - **Required Mesa patch:** a no-DRM surfaceless variant of
+    `06-tawc-zink-nokms.patch`. Stock `dri2_initialize_surfaceless`
+    only falls back to `surfaceless_probe_device_sw()` when
+    `LIBGL_ALWAYS_SOFTWARE` is set, and that also makes Zink request a
+    CPU device. The patch must allow hardware Zink with
+    `fd_render_gpu = -1` (as the Wayland no-KMS patch does) without
+    setting `ForceSoftware`/`ZINK_USE_LAVAPIPE`.
 - **Turnip** (same pinned Mesa, separate build):
   `-Dplatforms=android -Dandroid-stub=true -Dvulkan-drivers=freedreno
   -Dfreedreno-kmds=kgsl -Dgallium-drivers= -Dplatform-sdk-version=35`.
-  Stage `libvulkan_freedreno.so` and an ICD JSON with an absolute
-  `library_path`.
+  This produces the HAL module used by the AOSP loader, **not** a
+  Khronos ICD; its version script exports HAL symbols, not
+  `vk_icd*`. For an app-private Khronos loader, build a private ICD
+  variant with the normal `vulkan.sym` (or a small wrapper) and verify
+  `vk_icdGetInstanceProcAddr`/`vk_icdNegotiateLoaderICDInterfaceVersion`
+  are exported. AHB support is **not** required from Turnip, because
+  AHBs are converted to dma-bufs compositor-side; `VK_EXT_external_memory_dma_buf`
+  and `VK_EXT_image_drm_format_modifier` are enough.
 - **Private Khronos loader** pinned as a new `deps.list` entry (or a
   documented vendored copy), Android build, no WSI required. Stage as
   `libvulkan_tawc.so` so it cannot shadow the system `libvulkan.so`.
 - **Mesa patches**:
-  - `07-...`: Zink's `VK_LIBNAME` on Android must honour
+  - `07-...`: Zink's Vulkan library loader must honour
     `TAWC_VULKAN_LIB` (absolute path to `libvulkan_tawc.so`) instead of
     always `dlopen("libvulkan.so")`.
+  - `08-...`: no-DRM surfaceless Zink (see above).
   - If needed for AHB import/output, a small helper that exposes
     `u_gralloc`-equivalent AHB metadata (format/stride/modifier) to the
     Rust/C importer; do not duplicate QCOM UBWC guessing in two places
@@ -136,16 +189,16 @@ outputs target Android bionic and ride in `jniLibs/<abi>/`.
   to load a caller-selected libEGL path (`TAWC_EGL_LIB`) instead of the
   hard-coded `libEGL.so.1`. Set the env before the `LazyLock`/`Once`
   initialises; vendor mode leaves it unset.
-- **Packaging**: do not stage the `android-stub` versions of
-  `libnativewindow`/`libsync`/`liblog` — those would shadow the real
-  system libraries. `libhardware.so` is the one to watch: package a stub
-  only if the app namespace cannot resolve the system one, and verify
-  that u_gralloc's RGB fallback still works for AHB import/output.
-- Add a Gradle task/build wrapper to invoke the new Mesa Android build;
-  stage per-ABI outputs under `jniLibs/arm64-v8a/` (aarch64 only for
-  this feature). Follow `scripts/build-gfxstream-backend.sh` for the
-  NDK/cross-file pattern and `scripts/build-mesa-gfxstream.sh` for the
-  pinned Mesa + patch flow.
+- **Packaging**: this Mesa build should not stage `libnativewindow` /
+  `libhardware` / `libsync` / `liblog` stubs at all. The compositor
+  already uses the real platform libraries for AHBs and
+  `ASurfaceControl`; Mesa only needs `libdrm`, `libandroid-shmem`, and
+  the standard bionic libraries.
+- Add a Gradle task/build wrapper to invoke the new Mesa surfaceless
+  build; stage per-ABI outputs under `jniLibs/arm64-v8a/` (aarch64 only
+  for this feature). Follow `scripts/build-gfxstream-backend.sh` for
+  the NDK/cross-file pattern and `scripts/build-mesa-gfxstream.sh` for
+  the pinned Mesa + patch flow.
 - Add build flags (`GRAPHICS_MESA_SERVER_ENABLED`) and keep the feature
   out of release builds until the spike and integration tests pass.
 
@@ -199,25 +252,29 @@ API but have separate GPU state.
 - `RenderState` becomes an enum/struct with two backends:
   - `Vendor { renderer: GlesRenderer (system EGL), importer,
     plain_shader, tint_shader, host EGL surfaces }` — current behaviour.
-  - `Mesa { renderer: GlesRenderer (private Mesa EGL + Zink/Turnip),
-    importer, shaders, Mesa output targets }`.
+  - `Mesa { renderer: GlesRenderer (private Mesa surfaceless EGL +
+    Zink/Turnip), importer, shaders, Mesa output targets }`.
 - Mesa EGL/GL setup:
   - `egl_android.rs` gains a Mesa variant: `TAWC_EGL_LIB` must already
-    be set; use `EGL_DEFAULT_DISPLAY`; try `eglMakeCurrent(NO_SURFACE,
-    NO_SURFACE, context)`, fall back to a 1x1 pbuffer.
+    be set; use `eglGetPlatformDisplayEXT(EGL_PLATFORM_SURFACELESS_MESA,
+    EGL_DEFAULT_DISPLAY, NULL)` (not `EGL_DEFAULT_DISPLAY`/Android EGL);
+    try `eglMakeCurrent(NO_SURFACE, NO_SURFACE, context)`, fall back to
+    a 1x1 pbuffer.
   - `MESA_LOADER_DRIVER_OVERRIDE=zink`, `TAWC_VULKAN_LIB`, and
     `VK_ICD_FILENAMES` are set before any Mesa/Zink init (preferably in
     `nativeStartCompositor`/`run_compositor`, before `LazyRenderState`).
+    The Mesa build must include the no-DRM surfaceless patch (A1).
   - Do not initialise the Mesa stack when the mode is vendor (leave
     system EGL untouched).
 - AHB importer:
   - Parameterise `AhbTextureImporter` by the GLES library path so the
-    Mesa path loads `libGLESv2_mesa.so` instead of `libGLESv2.so`.
-  - Add `import_ahb_sampling` (external OES, current) and, if needed,
-    `import_ahb_render_target` (2D texture, for output).
-  - Add the Mesa AHB import strategy chosen in A0 (dma-buf + modifier
-    or ANativeWindowBuffer + `EGL_ANDROID_image_native_buffer`).
-  - Keep AHB ownership/release (`WleglBufferData`) unchanged.
+    Mesa path loads Mesa's GLESv2 rather than the system/vendor one.
+  - Do **not** use Mesa's Android EGL/`EGL_ANDROID_image_native_buffer`.
+    Convert each AHB (from `android_wlegl` or `tawc_gfxstream`) to
+    dma-buf fd + format/stride/modifier (u_gralloc/`gmsm` metadata) and
+    import it with `EGL_EXT_image_dma_buf_import`/`ImportDma`.
+  - Keep AHB ownership/release (`WleglBufferData`) unchanged; the
+    dma-buf fd is only borrowed for the import.
 - dmabuf import:
   - With the Mesa `GlesRenderer`, Smithay's `ImportDma` uses
     `EGL_EXT_image_dma_buf_import`; verify `dmabuf_formats()` is
@@ -227,7 +284,7 @@ API but have separate GPU state.
     `WaylandSurfaceRenderElement`.
 - `android_wlegl`/gfxstream/SHM:
   - Keep `WleglBufferData` and the AHB user-data path; in Mesa mode the
-    importer is the Mesa one.
+    AHB is converted to a dma-buf and imported by Mesa.
   - Keep SHM import unchanged.
   - Add a `SurfaceKind` tint for dmabuf (debug only), if the existing
     tint feature is to remain useful.
@@ -316,9 +373,10 @@ Use the external-connections branch locally; no Part B assets required.
 1. **Vendor control:** Mesa setting off → existing integration suite
    passes; `zwp_linux_dmabuf_v1` is absent; `android_wlegl`, SHM,
    gfxstream unchanged.
-2. **Mesa init:** enable setting + restart; logs show Zink + Turnip;
-   `android_wlegl` rootfs app (lxterminal/Firefox) renders; AHB import
-   path used.
+2. **Mesa init:** enable setting + restart; logs show surfaceless EGL +
+   Zink + Turnip; `android_wlegl` rootfs app (lxterminal/Firefox)
+   renders; AHB→dmabuf import path used. (Android EGL is not used and is
+   not expected to initialize without DRM/gralloc.)
 3. **dmabuf via Termux:** merge/rebase the external-connections branch;
    from Termux run a Turnip Wayland client (`vkcube`, or a minimal
    Vulkan test) with `WAYLAND_DISPLAY` pointing at the compositor.
@@ -336,8 +394,13 @@ Use the external-connections branch locally; no Part B assets required.
    no crash/black screen; no stale renderer state.
 8. **Regression:** multi-window, rotation/scale, IME/input, gfxstream
    AHB, screenshots/pixel tests, and the magenta SHM diagnostic.
-9. **Performance note:** record Zink + output-copy cost vs vendor for
-   a rootfs app and a Termux dmabuf client.
+9. **Performance note:** record Zink cost vs vendor for a rootfs app
+   and a Termux dmabuf client (target path has no output copy).
+10. **Termux caveats:** use Termux's existing **Linux Turnip ICD**, not
+    the Android HAL build, for Zink/dmabuf clients. Termux's AHB/system
+    libnativewindow namespace is not representative; do not use it to
+    judge `android_wlegl`/`ASurfaceTransaction`. Those must be tested
+    in the TAWC app.
 
 ## Part B — client side
 
@@ -442,10 +505,21 @@ default and depend on Part A for dmabuf. Do not remove libhybris.
 
 ## Risks / unknowns
 
-- **A0 is the main risk**: Zink on Android offscreen + AHB render target
-  + AHB import. If it fails, the fallback is a Turnip Vulkan renderer or
-  a hybrid Zink import bridge; do not assume the full Mesa GLES
-  renderer is viable before the spike.
+- **A0 is the main risk**: surfaceless Zink without DRM + AHB→dmabuf
+  import + AHB render target/present. If it fails, the fallback is a
+  Turnip Vulkan renderer or a hybrid Zink import bridge; do not assume
+  the full Mesa GLES renderer is viable before the spike.
+- **Android EGL is a dead end here**: `-Dplatforms=android` compiles,
+  but `droid_initialize` needs a DRM/gralloc display and fails in
+  Termux; surfaceless + AHB→dmabuf is the intended path. Do not spend
+  time making the Android EGL platform work.
+- **Turnip HAL vs ICD**: the Android build exports the HAL module, not
+  `vk_icd*`; an app-private Khronos loader needs an ICD variant (or the
+  system/AOSP loader with the HAL). Verify exported symbols before
+  staging.
+- **Termux AHB testing is misleading**: real `libnativewindow` staging
+  hits verneed/namespace issues and the Mesa android-stub AHB functions
+  do not allocate; use TAWC for AHB/ASurfaceTransaction.
 - `HAVE_LIBDRM`/libdrm on Android and the EGL dmabuf extension
   advertisements; may require a libdrm Android build or a narrow Mesa
   patch.

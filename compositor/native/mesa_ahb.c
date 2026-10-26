@@ -9,6 +9,7 @@
  */
 
 #include <android/hardware_buffer.h>
+#include <android/log.h>
 #include <android/native_window.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -16,6 +17,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#define LOG_TAG "tawc-native"
+#define LOGE(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 
 #define TAWC_DRM_FORMAT_MOD_INVALID UINT64_MAX
 #define TAWC_DRM_FORMAT_MOD_QCOM_COMPRESSED 0x0500000000000001ULL
@@ -109,35 +113,53 @@ format_fourcc(uint32_t format)
     }
 }
 
+struct tawc_ahb_dmabuf {
+    int fd;
+    uint32_t fourcc;
+    uint32_t stride;
+    uint64_t modifier;
+    uint32_t width;
+    uint32_t height;
+};
+
 /* Returns 0 and fills out on success. The fd is a dup owned by the caller. */
 int
-tawc_ahb_dmabuf_info(AHardwareBuffer *ahb, int *out_fd, uint32_t *out_fourcc,
-                     uint32_t *out_stride, uint64_t *out_modifier,
-                     uint32_t *out_width, uint32_t *out_height)
+tawc_ahb_dmabuf_info(AHardwareBuffer *ahb, struct tawc_ahb_dmabuf *out)
 {
-    if (!ahb || !out_fd || !out_fourcc || !out_stride || !out_modifier ||
-        !out_width || !out_height)
+    if (!ahb || !out)
         return -EINVAL;
 
     load_symbols();
-    if (!g_get_native_handle)
+    if (!g_get_native_handle) {
+        LOGE("AHB dmabuf: libnativewindow has no AHardwareBuffer_getNativeHandle");
         return -ENOSYS;
+    }
 
     const struct tawc_native_handle *h = g_get_native_handle(ahb);
-    if (!h || h->numFds < 1)
+    if (!h) {
+        LOGE("AHB dmabuf: getNativeHandle returned null");
         return -EINVAL;
+    }
+    if (h->numFds < 1) {
+        LOGE("AHB dmabuf: handle numFds=%d numInts=%d", h->numFds, h->numInts);
+        return -EINVAL;
+    }
 
     AHardwareBuffer_Desc desc;
     AHardwareBuffer_describe(ahb, &desc);
 
     int bpp = format_bpp(desc.format);
     uint32_t fourcc = format_fourcc(desc.format);
-    if (!bpp || !fourcc)
+    if (!bpp || !fourcc) {
+        LOGE("AHB dmabuf: unsupported format=0x%x stride=%u", desc.format, desc.stride);
         return -EINVAL;
+    }
 
     uint32_t stride_bytes = desc.stride ? desc.stride * bpp : desc.width * bpp;
-    if (!stride_bytes)
+    if (!stride_bytes) {
+        LOGE("AHB dmabuf: zero stride");
         return -EINVAL;
+    }
 
     uint64_t modifier = TAWC_DRM_FORMAT_MOD_INVALID;
     if (h->numInts >= 2) {
@@ -152,15 +174,17 @@ tawc_ahb_dmabuf_info(AHardwareBuffer *ahb, int *out_fd, uint32_t *out_fourcc,
     }
 
     int fd = dup(h->data[0]);
-    if (fd < 0)
+    if (fd < 0) {
+        LOGE("AHB dmabuf: dup failed: %d", errno);
         return -errno;
+    }
 
-    *out_fd = fd;
-    *out_fourcc = fourcc;
-    *out_stride = stride_bytes;
-    *out_modifier = modifier;
-    *out_width = desc.width;
-    *out_height = desc.height;
+    out->fd = fd;
+    out->fourcc = fourcc;
+    out->stride = stride_bytes;
+    out->modifier = modifier;
+    out->width = desc.width;
+    out->height = desc.height;
     return 0;
 }
 
@@ -173,6 +197,7 @@ tawc_ahb_alloc(uint32_t width, uint32_t height)
         .layers = 1,
         .format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
         .usage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+                 AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
                  AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY |
                  AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
         .stride = 0,

@@ -45,12 +45,13 @@ neither `libEGL.so` nor `libGLESv2.so` shadows the system vendor libraries.
 
 Mesa initialises a surfaceless EGL context (`EGL_MESA_platform_surfaceless`)
 and renders offscreen. Each `OutputHost` owns an `ASurfaceControl` derived
-from its `ANativeWindow` and two `R8G8B8A8` AHBs. A frame is rendered into a
-`GlesTexture`, read back with `glReadPixels`, copied (vertically flipped)
-into the AHB, and presented with `ASurfaceTransaction`. The buffer is reused
-only after the transaction's OnComplete callback. This is CPU readback, not
-the plan's zero-copy AHB-render-target target; it is the first working
-server-side spike and is intentionally simple.
+from its `ANativeWindow` and two `R8G8B8A8` AHBs. The AHB is imported as a
+dma-buf render target (`AHardwareBuffer_getNativeHandle` +
+`EGL_EXT_image_dma_buf_import`), the compositor renders into it, `glFinish`es,
+and presents it with `ASurfaceTransaction`; the buffer is reused only after
+the transaction's OnComplete callback. If the AHB dma-buf metadata is not
+available, the target falls back to the older CPU `glReadPixels` + AHB-copy
+path.
 
 `android_wlegl` buffers are imported through their wire dma-buf metadata:
 `libsync` fd duplication, QCOM `gmsm` UBWC flag when present, and
@@ -59,12 +60,26 @@ when the Mesa renderer initialised and reports a non-empty import format set
 (87 format/modifier pairs on the test Adreno device). Vendor mode keeps the
 old globals and does not load any Mesa libs.
 
+## Performance (2026-10-26)
+
+`vkcube --c 2400` from Termux through `tawc-run`:
+
+| Output path | Elapsed | Steady-state |
+|---|---|---|
+| CPU `glReadPixels` + AHB copy | 15.25s for 600 | ~39 fps |
+| Direct AHB dma-buf render target | 20.9s for 2400 | ~120 fps |
+
+The display was running at 120 Hz (`vsync_period_ns≈8.34ms`). The earlier
+~37 fps was the readback path forcing a GPU sync and a 9 MB CPU copy every
+frame, not Turnip/Zink client rendering.
+
 ## Current limitations
 
-- Output uses CPU readback + an extra copy; AHB-backed render targets and
-  zero-copy `ASurfaceTransaction` are the next step.
-- No explicit fence on output; `glReadPixels` is synchronous and the AHB
-  write completes before `setBuffer`.
+- Output calls `glFinish` before `ASurfaceTransaction`; an EGL fence would
+  avoid blocking the compositor thread, but 120 Hz is already reached.
+- The AHB dma-buf metadata path depends on `AHardwareBuffer_getNativeHandle`
+  being exported by the device's `libnativewindow`; otherwise the readback
+  fallback is used.
 - `android_wlegl` AHB import is implemented but was not exercised on device
   in the first bring-up (no rootfs installed). `tawc_gfxstream` AHBs use
   `AHardwareBuffer_getNativeHandle`; if the platform hides it, gfxstream

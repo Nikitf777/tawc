@@ -85,6 +85,7 @@ class CompositorService : Service() {
             displayMetrics.heightPixels,
             me.phie.tawc.Settings.xwayland,
             me.phie.tawc.Settings.pointerEmulation.ordinal,
+            me.phie.tawc.Settings.serverRenderer.ordinal,
         )
         if (!started) return
         // Everything below is per compositor run.

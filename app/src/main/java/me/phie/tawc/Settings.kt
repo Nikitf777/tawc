@@ -21,6 +21,7 @@ import androidx.core.content.edit
 object Settings {
     private const val PREFS_NAME = "tawc-settings"
     private const val KEY_GRAPHICS_BACKEND = "graphics_backend"
+    private const val KEY_SERVER_RENDERER = "server_renderer"
     private const val KEY_TINT_BUFFERS_BY_TYPE = "tint_buffers_by_type"
     private const val KEY_OUTPUT_SCALE = "output_scale"
     private const val KEY_OUTPUT_REFRESH_MHZ = "output_refresh_mhz"
@@ -66,6 +67,7 @@ object Settings {
 
     private interface Store {
         var graphicsBackend: GraphicsBackend
+        var serverRenderer: ServerRenderer
         var tintBuffersByType: Boolean
         var outputScale: Float
         var outputRefreshMhz: Int
@@ -92,6 +94,14 @@ object Settings {
             }
             set(value) {
                 prefs.edit { putString(KEY_GRAPHICS_BACKEND, value.key) }
+            }
+
+        override var serverRenderer: ServerRenderer
+            get() = ServerRenderer.fromKeyOrDefault(
+                prefs.getString(KEY_SERVER_RENDERER, null),
+            )
+            set(value) {
+                prefs.edit { putString(KEY_SERVER_RENDERER, value.key) }
             }
 
         override var tintBuffersByType: Boolean
@@ -194,6 +204,7 @@ object Settings {
 
     private class TestStore : Store {
         @Volatile override var graphicsBackend: GraphicsBackend = GraphicsBackend.DEFAULT
+        @Volatile override var serverRenderer: ServerRenderer = ServerRenderer.DEFAULT
         @Volatile override var tintBuffersByType: Boolean = DEFAULT_TINT_BUFFERS_BY_TYPE
         @Volatile override var outputScale: Float = DEFAULT_OUTPUT_SCALE
             set(value) { field = snapOutputScale(value) }
@@ -241,6 +252,18 @@ object Settings {
     var graphicsBackend: GraphicsBackend
         get() = requireStore().graphicsBackend
         set(value) { requireStore().graphicsBackend = value }
+
+    /**
+     * Which renderer the compositor uses. Separate from [graphicsBackend]:
+     * this controls the compositor's own EGL/GLES stack, while
+     * [graphicsBackend] controls how rootfs clients reach the GPU.
+     *
+     * Read when the compositor starts. Changing it requires restarting the
+     * app because Smithay binds one libEGL per process.
+     */
+    var serverRenderer: ServerRenderer
+        get() = requireStore().serverRenderer
+        set(value) { requireStore().serverRenderer = value }
 
     /**
      * Whether the compositor tints surfaces by buffer type so the
@@ -424,6 +447,38 @@ enum class PointerEmulation(val key: String) {
         val DEFAULT = HOVER
 
         fun fromKeyOrNull(key: String?): PointerEmulation? = entries.firstOrNull { it.key == key }
+    }
+}
+
+/**
+ * Which EGL/GLES renderer the compositor uses for its own output.
+ *
+ * Stored by [key], independent of the per-client [GraphicsBackend].
+ * [DEFAULT] keeps the experimental Mesa path selected on supported debug
+ * builds and falls back to vendor everywhere else.
+ */
+enum class ServerRenderer(val key: String, val displayName: String) {
+    /** System/vendor EGL bound to the Activity's SurfaceView. */
+    VENDOR_GLES("vendor", "Vendor GLES"),
+
+    /** Private Mesa surfaceless EGL with Zink/Turnip. */
+    MESA_GLES("mesa", "Mesa GLES (experimental)");
+
+    companion object {
+        val DEFAULT: ServerRenderer
+            get() = if (MesaServerSupport.isSupported()) MESA_GLES else VENDOR_GLES
+
+        fun fromKeyOrNull(key: String?): ServerRenderer? =
+            entries.firstOrNull { it.key == key }
+
+        fun fromKeyOrDefault(key: String?): ServerRenderer {
+            val match = fromKeyOrNull(key) ?: DEFAULT
+            return if (match == MESA_GLES && !MesaServerSupport.isSupported()) {
+                VENDOR_GLES
+            } else {
+                match
+            }
+        }
     }
 }
 

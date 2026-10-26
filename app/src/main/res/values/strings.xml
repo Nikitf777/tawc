@@ -48,6 +48,13 @@
     <string name="install_state_corrupt">metadata corrupt</string>
 
     <string name="settings_graphics_driver">Graphics driver</string>
+    <string name="settings_compositor_renderer">Compositor renderer</string>
+    <string name="settings_client_graphics">Client graphics</string>
+    <string name="server_renderer_vendor">Vendor GLES</string>
+    <string name="server_renderer_vendor_detail">System EGL. Shared buffers use android_wlegl.</string>
+    <string name="server_renderer_mesa">Mesa GLES (experimental)</string>
+    <string name="server_renderer_mesa_detail">Adreno only. Adds zwp_linux_dmabuf_v1 for dma-buf clients.</string>
+    <string name="server_renderer_restart">Changes take effect after restarting the app.</string>
     <string name="graphics_backend_libhybris_detail">Best performance, some apps may not work</string>
     <string name="graphics_backend_libhybris_zink_detail">(currently unsupported)</string>
     <string name="graphics_backend_gfxstream_detail">(currently unsupported)</string>

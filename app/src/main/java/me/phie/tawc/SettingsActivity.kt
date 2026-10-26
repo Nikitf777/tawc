@@ -25,6 +25,7 @@ import me.phie.tawc.ui.buildChildScreen
 import me.phie.tawc.ui.externalAccessGroup
 import me.phie.tawc.ui.graphicsBackendGroup
 import me.phie.tawc.ui.pointerEmulationGroup
+import me.phie.tawc.ui.serverRendererGroup
 import me.phie.tawc.ui.tawcCard
 import me.phie.tawc.ui.tonalButton
 import me.phie.tawc.ui.verticalLp
@@ -200,8 +201,23 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun buildGraphicsSettings(): android.view.View {
+        val pad = (12 * resources.displayMetrics.density).toInt()
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            if (MesaServerSupport.isSupported()) {
+                addView(
+                    graphicsSubheading(R.string.settings_compositor_renderer),
+                    LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
+                )
+                addView(
+                    serverRendererGroup(Settings.serverRenderer) { Settings.serverRenderer = it },
+                    LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
+                )
+                addView(
+                    graphicsSubheading(R.string.settings_client_graphics),
+                    LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = pad / 2 },
+                )
+            }
             addView(
                 graphicsBackendGroup(Settings.graphicsBackend) { Settings.graphicsBackend = it },
                 LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
@@ -209,6 +225,14 @@ class SettingsActivity : AppCompatActivity() {
             addView(buildTintBuffersCheckbox(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
     }
+
+    private fun graphicsSubheading(stringRes: Int): TextView =
+        TextView(this).apply {
+            text = getString(stringRes)
+            textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(0, (6 * resources.displayMetrics.density).toInt(), 0, 0)
+        }
 
     private fun buildTintBuffersCheckbox(): CheckBox {
         val cardPad = (12 * resources.displayMetrics.density).toInt()

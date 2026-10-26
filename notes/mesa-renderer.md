@@ -3,12 +3,12 @@
 The compositor can render with an app-private Mesa GLES stack instead of the
 vendor EGL driver. This is the Part A server side of
 [plans/mesa-gles-renderer.md](../plans/mesa-gles-renderer.md). It is selected
-by default on aarch64 Adreno/KGSL devices in dev builds, with no UI switch
-yet. `adb shell setprop debug.tawc.server_renderer vendor` (or `mesa`)
-selects the renderer; the `TAWC_SERVER_RENDERER` process env does the same
-for non-Android/debug harnesses. The choice is fixed for the process lifetime
-(Smithay's EGL loader binds one libEGL), so force-stop the app after changing
-it.
+through Settings → Graphics driver → Compositor renderer on supported
+aarch64 Adreno/KGSL debug builds; release builds keep the vendor renderer.
+`adb shell setprop debug.tawc.server_renderer vendor` (or `mesa`) and the
+`TAWC_SERVER_RENDERER` process env still override the setting for debug
+harnesses. The choice is fixed for the process lifetime (Smithay's EGL
+loader binds one libEGL), so restart the app after changing it.
 `scripts/build-release-apk.sh` passes `-PtawcMesaServer=false`, so release
 APKs still ship the vendor renderer and no server Mesa assets until the
 device test matrix is green.
@@ -89,7 +89,8 @@ frame, not Turnip/Zink client rendering.
   clients fail in Mesa mode.
 - Mesa init failure is fatal for that compositor run (the log names the
   error) rather than automatically falling back to vendor in-process.
-- No UI setting; the setting plumbing is still to be built.
+- The Settings row is hidden when `MesaServerSupport.isSupported()` is false.
+  A persisted Mesa value falls back to vendor on those devices.
 
 ## Verified on 2026-10-26
 

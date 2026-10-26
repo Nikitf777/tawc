@@ -46,6 +46,7 @@ pub struct GlFuncs {
     pub get_error: FnGlGetError,
     pub read_pixels: FnGlReadPixels,
     pub pixel_storei: FnGlPixelStorei,
+    pub finish: unsafe extern "C" fn(),
 }
 
 impl GlFuncs {
@@ -100,6 +101,7 @@ impl GlFuncs {
                 get_error: std::mem::transmute(load_gl(b"glGetError\0")?),
                 read_pixels: std::mem::transmute(load_gl(b"glReadPixels\0")?),
                 pixel_storei: std::mem::transmute(load_gl(b"glPixelStorei\0")?),
+                finish: std::mem::transmute(load_gl(b"glFinish\0")?),
             };
             std::mem::forget(gles_lib);
             Ok(funcs)

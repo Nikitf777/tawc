@@ -884,6 +884,7 @@ pub fn render_frame(
             return Ok(());
         };
 
+        let direct = present.is_direct(index);
         {
             let mesa_target = present
                 .target_mut(index)
@@ -897,9 +898,15 @@ pub fn render_frame(
             draw_elements(&elements, &mut frame, scale, screen_w, screen_h)?;
             let _ = frame.finish()?;
 
-            let pixels = crate::mesa::read_pixels(&mut render.renderer, screen_w, screen_h)?;
-            drop(target);
-            present.present(index, &pixels, screen_w, screen_h)?;
+            if direct {
+                crate::mesa::gl_finish(&mut render.renderer)?;
+                drop(target);
+                present.present_direct(index)?;
+            } else {
+                let pixels = crate::mesa::read_pixels(&mut render.renderer, screen_w, screen_h)?;
+                drop(target);
+                present.present(index, &pixels, screen_w, screen_h)?;
+            }
         }
         return Ok(());
     }

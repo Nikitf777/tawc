@@ -162,6 +162,10 @@ pub fn ahb_dmabuf_info(ahb: *mut ndk_sys::AHardwareBuffer) -> Option<DmaBufInfo>
     };
     let rc = unsafe { tawc_ahb_dmabuf_info(ahb, &mut raw) };
     if rc != 0 || raw.fd < 0 || raw.fourcc == 0 || raw.stride == 0 {
+        warn!(
+            "AHB dmabuf metadata failed: rc={} fd={} fourcc=0x{:x} stride={}",
+            rc, raw.fd, raw.fourcc, raw.stride
+        );
         return None;
     }
     Some(DmaBufInfo {
@@ -217,6 +221,9 @@ pub struct MesaTarget {
     pub texture: GlesTexture,
     ahb: *mut ndk_sys::AHardwareBuffer,
     in_flight: Arc<AtomicBool>,
+    /// True when `texture` is the AHB itself (dma-buf import), so the
+    /// frame is presented without a CPU readback.
+    direct: bool,
 }
 
 impl Drop for MesaTarget {
@@ -266,20 +273,40 @@ impl MesaPresent {
                     width, height
                 ));
             }
-            let texture = match renderer.create_buffer(
-                Fourcc::Abgr8888,
-                Size::<i32, BufferCoord>::from((width, height)),
-            ) {
-                Ok(texture) => texture,
-                Err(e) => {
-                    unsafe { tawc_ahb_release(ahb) };
-                    return Err(format!("create_buffer {}x{}: {:?}", width, height, e));
+            let (texture, direct) = if let Some(info) = ahb_dmabuf_info(ahb) {
+                let imported = import_dmabuf_texture(renderer, &info);
+                unsafe { libc::close(info.fd) };
+                match imported {
+                    Ok(texture) => (texture, true),
+                    Err(e) => {
+                        warn!(
+                            "Mesa output AHB dma-buf import failed ({}); falling back to readback",
+                            e
+                        );
+                        let texture = renderer
+                            .create_buffer(
+                                Fourcc::Abgr8888,
+                                Size::<i32, BufferCoord>::from((width, height)),
+                            )
+                            .map_err(|e| format!("create_buffer {}x{}: {:?}", width, height, e))?;
+                        (texture, false)
+                    }
                 }
+            } else {
+                warn!("Mesa output AHB has no dmabuf metadata; using readback path");
+                let texture = renderer
+                    .create_buffer(
+                        Fourcc::Abgr8888,
+                        Size::<i32, BufferCoord>::from((width, height)),
+                    )
+                    .map_err(|e| format!("create_buffer {}x{}: {:?}", width, height, e))?;
+                (texture, false)
             };
             self.targets.push(MesaTarget {
                 texture,
                 ahb,
                 in_flight: Arc::new(AtomicBool::new(false)),
+                direct,
             });
         }
         info!("Mesa output targets ready: {}x{}", width, height);
@@ -294,6 +321,35 @@ impl MesaPresent {
 
     pub fn target_mut(&mut self, index: usize) -> Option<&mut MesaTarget> {
         self.targets.get_mut(index)
+    }
+
+    pub fn is_direct(&self, index: usize) -> bool {
+        self.targets.get(index).is_some_and(|target| target.direct)
+    }
+
+    fn present_target(&mut self, index: usize) -> Result<(), String> {
+        let target = self
+            .targets
+            .get_mut(index)
+            .ok_or_else(|| "bad Mesa target index".to_string())?;
+        target.in_flight.store(true, Ordering::Release);
+        let ctx = Box::into_raw(Box::new(PresentCtx {
+            free: target.in_flight.clone(),
+        }));
+        let rc = unsafe {
+            tawc_asurface_present(self.control, target.ahb, Some(present_complete), ctx as *mut c_void)
+        };
+        if rc != 0 {
+            target.in_flight.store(false, Ordering::Release);
+            drop(unsafe { Box::from_raw(ctx) });
+            return Err(format!("ASurfaceTransaction_setBuffer failed: {}", rc));
+        }
+        Ok(())
+    }
+
+    /// Present a target that was rendered into directly (AHB-backed texture).
+    pub fn present_direct(&mut self, index: usize) -> Result<(), String> {
+        self.present_target(index)
     }
 
     /// Copy the GL framebuffer into the target AHB and hand it to
@@ -320,19 +376,7 @@ impl MesaPresent {
             return Err(format!("AHardwareBuffer write failed: {}", rc));
         }
 
-        target.in_flight.store(true, Ordering::Release);
-        let ctx = Box::into_raw(Box::new(PresentCtx {
-            free: target.in_flight.clone(),
-        }));
-        let rc = unsafe {
-            tawc_asurface_present(self.control, target.ahb, Some(present_complete), ctx as *mut c_void)
-        };
-        if rc != 0 {
-            target.in_flight.store(false, Ordering::Release);
-            drop(unsafe { Box::from_raw(ctx) });
-            return Err(format!("ASurfaceTransaction_setBuffer failed: {}", rc));
-        }
-        Ok(())
+        self.present_target(index)
     }
 }
 
@@ -344,6 +388,20 @@ impl Drop for MesaPresent {
             self.control = std::ptr::null_mut();
         }
     }
+}
+
+/// Wait for the GPU to finish writing the current target. Used before
+/// handing a directly-rendered AHB to SurfaceFlinger.
+pub fn gl_finish(renderer: &mut GlesRenderer) -> Result<(), String> {
+    let gl = GlFuncs::load(renderer)?;
+    unsafe {
+        renderer
+            .egl_context()
+            .make_current()
+            .map_err(|e| format!("make_current: {:?}", e))?;
+        (gl.finish)();
+    }
+    Ok(())
 }
 
 /// Read the currently bound framebuffer into a tightly packed RGBA8 buffer,

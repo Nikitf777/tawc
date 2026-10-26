@@ -109,6 +109,10 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="stateHidden|adjustResize" />
 
+        <receiver
+            android:name=".AppRestartReceiver"
+            android:exported="false" />
+
         <service
             android:name=".compositor.CompositorService"
             android:exported="false" />

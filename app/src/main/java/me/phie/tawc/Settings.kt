@@ -101,7 +101,9 @@ object Settings {
                 prefs.getString(KEY_SERVER_RENDERER, null),
             )
             set(value) {
-                prefs.edit { putString(KEY_SERVER_RENDERER, value.key) }
+                // commit, not apply: AppRestart may kill the process before
+                // an async write reaches disk.
+                prefs.edit(commit = true) { putString(KEY_SERVER_RENDERER, value.key) }
             }
 
         override var tintBuffersByType: Boolean
@@ -227,12 +229,16 @@ object Settings {
 
     @Volatile private var store: Store? = null
 
+    /** Renderer selected when this process started, for [serverRendererChangedSinceStart]. */
+    @Volatile private var startupServerRenderer: ServerRenderer? = null
+
     /** Called from [TawcApplication.onCreate]. Idempotent. */
     fun init(context: Context) {
         if (store == null) {
             store = SharedPreferencesStore(context.applicationContext
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             )
+            startupServerRenderer = serverRenderer
         }
     }
 
@@ -247,6 +253,7 @@ object Settings {
     fun enterTestMode() {
         requireStore()
         store = TestStore()
+        startupServerRenderer = store?.serverRenderer
     }
 
     var graphicsBackend: GraphicsBackend
@@ -264,6 +271,14 @@ object Settings {
     var serverRenderer: ServerRenderer
         get() = requireStore().serverRenderer
         set(value) { requireStore().serverRenderer = value }
+
+    /**
+     * True when the setting differs from the renderer bound at process start.
+     * The EGL library cannot be swapped in-process, so this is the "restart
+     * required" state used by Settings and the home menu.
+     */
+    val serverRendererChangedSinceStart: Boolean
+        get() = startupServerRenderer?.let { it != serverRenderer } ?: false
 
     /**
      * Whether the compositor tints surfaces by buffer type so the

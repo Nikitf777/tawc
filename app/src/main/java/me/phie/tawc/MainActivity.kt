@@ -405,7 +405,11 @@ class MainActivity : AppCompatActivity() {
         menu.item(ORDER_APP, R.string.title_task_manager) {
             startActivity(Intent(this, TaskManagerActivity::class.java))
         }
-        if (NativeBridge.nativeIsCompositorRunning()) {
+        if (Settings.serverRendererChangedSinceStart) {
+            menu.item(ORDER_APP, R.string.action_restart_compositor) {
+                AppRestart.restart(this)
+            }
+        } else if (NativeBridge.nativeIsCompositorRunning()) {
             menu.item(ORDER_APP, R.string.action_stop_compositor) {
                 CompositorService.stop()
             }

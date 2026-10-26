@@ -8,7 +8,10 @@ aarch64 Adreno/KGSL debug builds; release builds keep the vendor renderer.
 `adb shell setprop debug.tawc.server_renderer vendor` (or `mesa`) and the
 `TAWC_SERVER_RENDERER` process env still override the setting for debug
 harnesses. The choice is fixed for the process lifetime (Smithay's EGL
-loader binds one libEGL), so restart the app after changing it.
+loader binds one libEGL), so changing it prompts for an app restart. Choosing
+Later keeps the setting pending; the home menu then offers "Restart
+compositor", which relaunches the app through an alarm + broadcast receiver
+(`AppRestart`) so the new process loads the selected EGL library.
 `scripts/build-release-apk.sh` passes `-PtawcMesaServer=false`, so release
 APKs still ship the vendor renderer and no server Mesa assets until the
 device test matrix is green.

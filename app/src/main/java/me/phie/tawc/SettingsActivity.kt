@@ -11,6 +11,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import me.phie.tawc.compositor.NativeBridge
 import me.phie.tawc.install.AllFilesAccess
@@ -210,7 +211,7 @@ class SettingsActivity : AppCompatActivity() {
                     LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
                 )
                 addView(
-                    serverRendererGroup(Settings.serverRenderer) { Settings.serverRenderer = it },
+                    serverRendererGroup(Settings.serverRenderer) { showServerRendererRestartPrompt(it) },
                     LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
                 )
                 addView(
@@ -224,6 +225,19 @@ class SettingsActivity : AppCompatActivity() {
             )
             addView(buildTintBuffersCheckbox(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
+    }
+
+    private fun showServerRendererRestartPrompt(renderer: ServerRenderer) {
+        if (renderer == Settings.serverRenderer) return
+        Settings.serverRenderer = renderer
+        AlertDialog.Builder(this)
+            .setTitle(R.string.server_renderer_restart_title)
+            .setMessage(getString(R.string.server_renderer_restart_message, renderer.displayName))
+            .setPositiveButton(R.string.server_renderer_restart_now) { _, _ ->
+                AppRestart.restart(this)
+            }
+            .setNegativeButton(R.string.server_renderer_restart_later, null)
+            .show()
     }
 
     private fun graphicsSubheading(stringRes: Int): TextView =

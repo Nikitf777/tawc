@@ -128,6 +128,12 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // A killed compositor process cannot remove its window tasks. If no
+        // compositor is running in this process, any such task is stale.
+        if (!me.phie.tawc.compositor.NativeBridge.nativeIsCompositorRunning()) {
+            CompositorTasks.removeStale(this, this)
+        }
+
         requestNotificationPermissionIfNeeded()
         // A new home task: any earlier self-removal is over, whether or
         // not onTaskRemoved saw it.

@@ -25,6 +25,7 @@ class RestartActivity : Activity() {
         val alive = oldPid > 0 && oldPid != android.os.Process.myPid() &&
             File("/proc/$oldPid").exists()
         if (!alive || System.currentTimeMillis() >= deadline) {
+            CompositorTasks.removeStale(this, this)
             startActivity(
                 Intent(this, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)

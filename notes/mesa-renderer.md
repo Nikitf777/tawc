@@ -14,7 +14,10 @@ compositor". `AppRestart` starts a transparent `RestartActivity` in a
 separate `:restart` process while the current Activity is still visible,
 kills the old process, and the trampoline starts MainActivity once the old
 pid is gone. Android 14 blocks an alarm/broadcast from bringing the
-singleTask MainActivity back directly (`BAL_BLOCK`).
+singleTask MainActivity back directly (`BAL_BLOCK`). The trampoline also
+removes stale CompositorActivity tasks from recents before starting
+MainActivity; MainActivity does the same on a fresh process when no
+compositor is running.
 `scripts/build-release-apk.sh` passes `-PtawcMesaServer=false`, so release
 APKs still ship the vendor renderer and no server Mesa assets until the
 device test matrix is green.

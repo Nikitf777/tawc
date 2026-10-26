@@ -25,6 +25,7 @@
     <string name="action_apps">Apps</string>
     <string name="action_close_all_terminals">Close all</string>
     <string name="action_stop_compositor">Stop compositor</string>
+    <string name="action_restart_compositor">Restart compositor</string>
     <string name="action_clear_search">Clear search</string>
     <string name="action_run">Run</string>
     <string name="action_run_command">Run&#8230;</string>
@@ -56,6 +57,10 @@
     <string name="server_renderer_mesa">Mesa GLES (experimental)</string>
     <string name="server_renderer_mesa_detail">Adreno only. Adds zwp_linux_dmabuf_v1 for dma-buf clients.</string>
     <string name="server_renderer_restart">Changes take effect after restarting the app.</string>
+    <string name="server_renderer_restart_title">Restart compositor?</string>
+    <string name="server_renderer_restart_message">%1$s takes effect after the app restarts. Restarting closes running terminal sessions. Choose Later to keep them and apply the change from the home menu.</string>
+    <string name="server_renderer_restart_now">Restart now</string>
+    <string name="server_renderer_restart_later">Later</string>
     <string name="graphics_backend_libhybris_detail">Best performance, some apps may not work</string>
     <string name="graphics_backend_libhybris_zink_detail">(currently unsupported)</string>
     <string name="graphics_backend_gfxstream_detail">(currently unsupported)</string>

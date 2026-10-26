@@ -17,6 +17,8 @@ use std::ptr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use log::{debug, warn};
+
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::{ExternalBuffer, ExternalBufferData, ExternalBufferImportError};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
@@ -172,7 +174,7 @@ fn ahb_format_bpp(format: u32) -> u32 {
 }
 
 fn qcom_modifier(ints: &[i32]) -> u64 {
-    const GMSM: i32 = 0x6d736d67;
+    const GMSM: i32 = 0x676d736d;
     const QCOM_COMPRESSED: u64 = 0x0500000000000001;
     for pair in ints.windows(2) {
         if pair[0] == GMSM {
@@ -502,6 +504,19 @@ impl Dispatch<AndroidWlegl, ()> for TawcState {
                     None
                 };
 
+                if mesa {
+                    match dmabuf {
+                        Some(info) => debug!(
+                            "wlegl AHB {}x{} stride={} fmt=0x{:x} usage=0x{:x} ints={:?} -> dma fourcc=0x{:x} stride={} modifier=0x{:x}",
+                            w_u, h_u, stride_u, fmt_u, usage_u64, ints,
+                            info.fourcc, info.stride, info.modifier
+                        ),
+                        None => warn!(
+                            "wlegl AHB {}x{} stride={} fmt=0x{:x} usage=0x{:x} ints={:?}: no dma-buf metadata",
+                            w_u, h_u, stride_u, fmt_u, usage_u64, ints
+                        ),
+                    }
+                }
                 let data = WleglBufferData {
                     ahb,
                     width,

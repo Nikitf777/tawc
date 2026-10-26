@@ -24,7 +24,6 @@
     <string name="action_new_terminal">New terminal</string>
     <string name="action_apps">Apps</string>
     <string name="action_close_all_terminals">Close all</string>
-    <string name="action_stop_compositor">Stop compositor</string>
     <string name="action_restart_compositor">Restart compositor</string>
     <string name="action_clear_search">Clear search</string>
     <string name="action_run">Run</string>

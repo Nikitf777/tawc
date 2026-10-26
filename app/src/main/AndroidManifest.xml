@@ -71,6 +71,15 @@
              onNewIntent. configChanges keeps rotation from rebuilding
              the terminal; adjustResize lets the IME shrink the panes. -->
         <activity
+            android:name=".RestartActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:process=":restart"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
@@ -108,10 +117,6 @@
             android:taskAffinity=""
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="stateHidden|adjustResize" />
-
-        <receiver
-            android:name=".AppRestartReceiver"
-            android:exported="false" />
 
         <service
             android:name=".compositor.CompositorService"

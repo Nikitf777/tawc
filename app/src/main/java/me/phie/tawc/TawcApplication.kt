@@ -28,6 +28,9 @@ import kotlin.concurrent.thread
 class TawcApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        // The restart trampoline needs no process-wide services; keep its
+        // process light so it can relaunch the main process quickly.
+        if (android.app.Application.getProcessName().endsWith(":restart")) return
         // Bind the SharedPreferences instance early so non-Activity
         // code (RootfsEnv on the broker thread, etc.) can read settings
         // without a Context handle. Cheap (memory-mapped pref file).

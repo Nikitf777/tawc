@@ -199,18 +199,42 @@ unsafe extern "C" {
         on_complete: Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
         context: *mut c_void,
     ) -> i32;
+    fn tawc_asurface_wait_previous_release(stats: *mut c_void, control: *mut c_void) -> i32;
+}
+
+/// Owns an ASurfaceControl. Pending present callbacks hold a clone, so the
+/// control outlives `MesaPresent` until the last callback has run.
+struct ControlHandle {
+    ptr: *mut c_void,
+}
+
+unsafe impl Send for ControlHandle {}
+unsafe impl Sync for ControlHandle {}
+
+impl Drop for ControlHandle {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe { tawc_asurface_release(self.ptr) };
+        }
+    }
 }
 
 struct PresentCtx {
-    free: Arc<AtomicBool>,
+    free: Option<Arc<AtomicBool>>,
+    control: Arc<ControlHandle>,
 }
 
-unsafe extern "C" fn present_complete(context: *mut c_void, _stats: *mut c_void) {
+unsafe extern "C" fn present_complete(context: *mut c_void, stats: *mut c_void) {
     if context.is_null() {
         return;
     }
     let ctx = Box::from_raw(context as *mut PresentCtx);
-    ctx.free.store(false, Ordering::Release);
+    if let Some(free) = ctx.free {
+        // OnComplete means the PREVIOUS buffer is being released. Wait for
+        // its release fence before putting it back into the pool.
+        unsafe { tawc_asurface_wait_previous_release(stats, ctx.control.ptr) };
+        free.store(false, Ordering::Release);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -235,9 +259,12 @@ impl Drop for MesaTarget {
 /// Output state for one Android host window: an ASurfaceControl plus two
 /// AHB ping-pong buffers.
 pub struct MesaPresent {
-    control: *mut c_void,
+    control: Arc<ControlHandle>,
     targets: Vec<MesaTarget>,
     size: (i32, i32),
+    /// Target currently held by SurfaceFlinger. Its own OnComplete callback
+    /// frees the PREVIOUS target, never this one.
+    presented: Option<usize>,
 }
 
 impl MesaPresent {
@@ -248,14 +275,15 @@ impl MesaPresent {
             return None;
         }
         Some(Self {
-            control,
+            control: Arc::new(ControlHandle { ptr: control }),
             targets: Vec::new(),
             size: (0, 0),
+            presented: None,
         })
     }
 
     pub fn is_ready(&self) -> bool {
-        !self.control.is_null()
+        !self.control.ptr.is_null()
     }
 
     pub fn ensure_size(&mut self, renderer: &mut GlesRenderer, width: i32, height: i32) -> Result<(), String> {
@@ -263,6 +291,7 @@ impl MesaPresent {
             return Ok(());
         }
         self.targets.clear();
+        self.presented = None;
         self.size = (width, height);
 
         for _ in 0..2 {
@@ -328,20 +357,40 @@ impl MesaPresent {
     }
 
     fn present_target(&mut self, index: usize) -> Result<(), String> {
+        let previous = self.presented.replace(index);
+        let previous_free = previous.and_then(|p| {
+            self.targets
+                .get(p)
+                .map(|target| target.in_flight.clone())
+        });
         let target = self
             .targets
             .get_mut(index)
             .ok_or_else(|| "bad Mesa target index".to_string())?;
         target.in_flight.store(true, Ordering::Release);
-        let ctx = Box::into_raw(Box::new(PresentCtx {
-            free: target.in_flight.clone(),
-        }));
+
+        let (callback, context): (
+            Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
+            *mut c_void,
+        ) = match previous_free {
+            Some(free) => {
+                let ctx = Box::into_raw(Box::new(PresentCtx {
+                    free: Some(free),
+                    control: self.control.clone(),
+                }));
+                (Some(present_complete), ctx as *mut c_void)
+            }
+            None => (None, std::ptr::null_mut()),
+        };
+
         let rc = unsafe {
-            tawc_asurface_present(self.control, target.ahb, Some(present_complete), ctx as *mut c_void)
+            tawc_asurface_present(self.control.ptr, target.ahb, callback, context)
         };
         if rc != 0 {
             target.in_flight.store(false, Ordering::Release);
-            drop(unsafe { Box::from_raw(ctx) });
+            if !context.is_null() {
+                drop(unsafe { Box::from_raw(context as *mut PresentCtx) });
+            }
             return Err(format!("ASurfaceTransaction_setBuffer failed: {}", rc));
         }
         Ok(())
@@ -383,10 +432,9 @@ impl MesaPresent {
 impl Drop for MesaPresent {
     fn drop(&mut self) {
         self.targets.clear();
-        if !self.control.is_null() {
-            unsafe { tawc_asurface_release(self.control) };
-            self.control = std::ptr::null_mut();
-        }
+        self.presented = None;
+        // `ControlHandle` releases the ASurfaceControl once the last pending
+        // present callback has dropped its clone.
     }
 }
 

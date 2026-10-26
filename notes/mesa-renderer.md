@@ -49,9 +49,9 @@ from its `ANativeWindow` and two `R8G8B8A8` AHBs. The AHB is imported as a
 dma-buf render target (`AHardwareBuffer_getNativeHandle` +
 `EGL_EXT_image_dma_buf_import`), the compositor renders into it, `glFinish`es,
 and presents it with `ASurfaceTransaction`; the buffer is reused only after
-the transaction's OnComplete callback. If the AHB dma-buf metadata is not
-available, the target falls back to the older CPU `glReadPixels` + AHB-copy
-path.
+the *previous* transaction's OnComplete callback and release fence. If the
+AHB dma-buf metadata is not available, the target falls back to the older CPU
+`glReadPixels` + AHB-copy path.
 
 `android_wlegl` buffers are imported through their wire dma-buf metadata:
 `libsync` fd duplication, QCOM `gmsm` UBWC flag when present, and
@@ -80,6 +80,9 @@ frame, not Turnip/Zink client rendering.
 - The AHB dma-buf metadata path depends on `AHardwareBuffer_getNativeHandle`
   being exported by the device's `libnativewindow`; otherwise the readback
   fallback is used.
+- `android_wlegl` AHB import uses the QCOM `gmsm` handle marker for the
+  modifier. Without that marker the import omits the modifier attribute,
+  which is only correct for linear buffers.
 - `android_wlegl` AHB import is implemented but was not exercised on device
   in the first bring-up (no rootfs installed). `tawc_gfxstream` AHBs use
   `AHardwareBuffer_getNativeHandle`; if the platform hides it, gfxstream

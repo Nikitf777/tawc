@@ -13,6 +13,7 @@
 #include <android/native_window.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,8 @@ void ASurfaceTransaction_setOnComplete(ASurfaceTransaction *transaction,
                                        void *context,
                                        ASurfaceTransaction_OnComplete func);
 void ASurfaceTransaction_apply(ASurfaceTransaction *transaction);
+int ASurfaceTransactionStats_getPreviousReleaseFenceFd(
+    ASurfaceTransactionStats *stats, ASurfaceControl *surface_control);
 
 #define TAWC_ADATASPACE_SRGB 142671872
 #define TAWC_ASURFACE_TRANSPARENCY_OPAQUE 2
@@ -166,7 +169,7 @@ tawc_ahb_dmabuf_info(AHardwareBuffer *ahb, struct tawc_ahb_dmabuf *out)
         const int32_t *ints = &h->data[h->numFds];
         /* QCOM gralloc's legacy private_handle_t marker. Modern gralloc4
          * AHB handles still carry it on the devices TAWC targets. */
-        if (ints[0] == (int32_t)0x6d736d67) { /* 'gmsm' little endian */
+        if (ints[0] == (int32_t)0x676d736d) { /* 'gmsm' marker */
             modifier = (ints[1] & 0x08000000)
                 ? TAWC_DRM_FORMAT_MOD_QCOM_COMPRESSED
                 : 0; /* DRM_FORMAT_MOD_LINEAR */
@@ -270,6 +273,26 @@ tawc_asurface_release(void *control)
 {
     if (control)
         ASurfaceControl_release((ASurfaceControl *)control);
+}
+
+/* Wait for the previous buffer's release fence, if any. Must be called from
+ * the OnComplete callback, where `stats` is valid. */
+int
+tawc_asurface_wait_previous_release(void *stats, void *control)
+{
+    if (!stats || !control)
+        return 0;
+    int fd = ASurfaceTransactionStats_getPreviousReleaseFenceFd(
+        (ASurfaceTransactionStats *)stats, (ASurfaceControl *)control);
+    if (fd < 0)
+        return 0;
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    int rc;
+    do {
+        rc = poll(&pfd, 1, -1);
+    } while (rc < 0 && errno == EINTR);
+    close(fd);
+    return rc < 0 ? -1 : 0;
 }
 
 int

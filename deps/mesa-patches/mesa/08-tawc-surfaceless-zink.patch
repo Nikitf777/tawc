@@ -1,0 +1,22 @@
+diff --git a/src/egl/drivers/dri2/platform_surfaceless.c b/src/egl/drivers/dri2/platform_surfaceless.c
+index 8fbb9a60ed4..d119eddf488 100644
+--- a/src/egl/drivers/dri2/platform_surfaceless.c
++++ b/src/egl/drivers/dri2/platform_surfaceless.c
+@@ -389,8 +389,15 @@ dri2_initialize_surfaceless(_EGLDisplay *disp)
+     */
+    driver_loaded = surfaceless_probe_device(disp, disp->Options.ForceSoftware,
+                                             disp->Options.Zink);
+-   if (!driver_loaded && disp->Options.ForceSoftware) {
+-      _eglLog(_EGL_DEBUG, "Falling back to surfaceless swrast without DRM.");
++   /* tawc-fork: Android app processes have no /dev/dri, so the DRM
++    * probe above always fails. With MESA_LOADER_DRIVER_OVERRIDE=zink we
++    * still want hardware Zink, not llvmpipe. surfaceless_probe_device_sw
++    * already picks driver_name="zink" + Kopper-Zink when Options.Zink is
++    * set, and fd_render_gpu=-1 makes driCreateNewScreen3 take the no-DRM
++    * path. Do not set ForceSoftware (that would also make Zink request a
++    * CPU device). Same shape as 06-tawc-zink-nokms.patch for Wayland. */
++   if (!driver_loaded && disp->Options.Zink) {
++      _eglLog(_EGL_DEBUG, "Falling back to surfaceless Zink without DRM.");
+       driver_loaded = surfaceless_probe_device_sw(disp);
+    }
+ 

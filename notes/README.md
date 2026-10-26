@@ -36,6 +36,7 @@ Start here when looking for durable project context. `AGENTS.md` keeps only alwa
 - [wsi-layer.md](wsi-layer.md) - libhybris Wayland EGL/Vulkan WSI details.
 - [gfxstream-bridge.md](gfxstream-bridge.md) - experimental gfxstream/kumquat backend; Vulkan via AHB works on physical hardware, but it is partial and not production-ready.
 - [libhybris-zink.md](libhybris-zink.md) - implemented libhybris+Zink backend; blocked on currently available Vulkan 1.1 hardware.
+- [mesa-renderer.md](mesa-renderer.md) - experimental server-side Mesa GLES/Zink/Turnip renderer and `zwp_linux_dmabuf_v1`.
 - [xwayland.md](xwayland.md) - bionic-built Xwayland, TAWC-DRI, and X11 client support.
 
 ## Input And Apps

@@ -47,6 +47,16 @@ run {
 val libhybrisZinkEnabled: Boolean = "libhybris-zink" in enabledGraphics
 val gfxstreamEnabled: Boolean = "gfxstream" in enabledGraphics
 val mesaBuildNeeded: Boolean = gfxstreamEnabled || libhybrisZinkEnabled
+// Server-side Mesa GLES stack (Part A). Enabled for dev builds; release
+// builds default it off until the device test matrix is green. An explicit
+// -PtawcMesaServer=true/false overrides either default.
+val buildingRelease = gradle.startParameter.taskNames.any {
+    it.contains("release", ignoreCase = true)
+}
+val mesaServerBuildEnabled: Boolean = (project.findProperty("tawcMesaServer") as String?)
+    ?.trim()?.lowercase()
+    ?.let { it !in setOf("0", "false", "no", "off") }
+    ?: !buildingRelease
 
 fun booleanProjectPropertyOrNull(name: String): Boolean? {
     val raw = project.findProperty(name) as String? ?: return null
@@ -134,6 +144,7 @@ android {
             buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ENABLED",      "${"libhybris" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ZINK_ENABLED", "${"libhybris-zink" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_GFXSTREAM_ENABLED",      "${"gfxstream" in enabledGraphics}")
+            buildConfigField("boolean", "GRAPHICS_MESA_SERVER_ENABLED",    "${mesaServerBuildEnabled}")
             buildConfigField("boolean", "GRAPHICS_CPU_ENABLED",            "${"cpu" in enabledGraphics}")
             buildConfigField("boolean", "XWAYLAND_ENABLED", "$xwaylandPackaged")
             buildConfigField("boolean", "TINT_BUFFERS_BY_TYPE_DEFAULT", "true")
@@ -158,6 +169,7 @@ android {
             buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ENABLED",      "${"libhybris" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_LIBHYBRIS_ZINK_ENABLED", "${"libhybris-zink" in enabledGraphics}")
             buildConfigField("boolean", "GRAPHICS_GFXSTREAM_ENABLED",      "${"gfxstream" in enabledGraphics}")
+            buildConfigField("boolean", "GRAPHICS_MESA_SERVER_ENABLED",    "${mesaServerBuildEnabled}")
             buildConfigField("boolean", "GRAPHICS_CPU_ENABLED",            "${"cpu" in enabledGraphics}")
             buildConfigField("boolean", "XWAYLAND_ENABLED", "$xwaylandPackaged")
             buildConfigField("boolean", "TINT_BUFFERS_BY_TYPE_DEFAULT", "false")
@@ -425,10 +437,14 @@ tasks.withType<Exec>().configureEach {
 // per-ABI `buildRustLibrary*` tasks. Pin lives in deps/deps.list.
 val setupSmithayTask = tasks.register<Exec>("setupSmithay") {
     workingDir = tawcRootForSmithay
-    commandLine("scripts/ensure-deps.sh", "smithay")
+    commandLine(
+        "scripts/ensure-deps.sh",
+        "--patches", "smithay", "deps/smithay-patches/smithay",
+    )
     inputs.file("$tawcRootForSmithay/scripts/ensure-deps.sh")
     inputs.file("$tawcRootForSmithay/deps/deps.list")
     inputs.file("$tawcRootForSmithay/scripts/lib/deps.sh")
+    inputs.dir("$tawcRootForSmithay/deps/smithay-patches")
     outputs.file(smithayCargoToml)
 }
 
@@ -926,6 +942,41 @@ tawcAbis.forEach { abi ->
     tasks.named("preBuild") {
         dependsOn(packMesaGfxstreamTask)
         dependsOn(packMesaZinkTask)
+    }
+
+    // Server-side Mesa GLES stack (private libEGL/libGLESv2 + Zink, Turnip
+    // ICD and loader shim). aarch64 only; x86_64 keeps the vendor renderer.
+    val mesaServerEnabled = mesaServerBuildEnabled && abi == "arm64-v8a"
+    val mesaServerTar = "$tawcRoot/build/mesa-server-aarch64/mesa-server.tar"
+    val mesaServerAssetDir = "src/main/assets/mesa-server/$abi"
+    if (mesaServerEnabled) {
+        val buildMesaServerTask = tasks.register<Exec>("buildMesaServer$capAbi") {
+            workingDir = tawcRoot
+            commandLine("bash", "scripts/build-mesa-server.sh")
+            inputs.file("$tawcRoot/scripts/build-mesa-server.sh")
+            inputs.files(
+                "$tawcRoot/compositor/native/mesa_ahb.c",
+                "$tawcRoot/compositor/native/vulkan_shim.c",
+            )
+            inputs.dir("$tawcRoot/deps/mesa-patches")
+            inputs.file("$tawcRoot/deps/deps.list")
+            inputs.file("$tawcRoot/scripts/lib/deps.sh")
+            inputs.property("depTreeState", depTreeState("mesa"))
+            outputs.file(mesaServerTar)
+        }
+        val packMesaServerTask = tasks.register<Copy>("packMesaServer$capAbi") {
+            dependsOn(buildMesaServerTask)
+            into("${project.projectDir}/$mesaServerAssetDir")
+            from(mesaServerTar) {
+                rename { "mesa-server.tar" }
+            }
+        }
+        tasks.named("preBuild") { dependsOn(packMesaServerTask) }
+    } else {
+        tasks.register<Delete>("packMesaServer$capAbi") {
+            delete("${project.projectDir}/$mesaServerAssetDir")
+        }
+        tasks.named("preBuild") { dependsOn("packMesaServer$capAbi") }
     }
 }
 

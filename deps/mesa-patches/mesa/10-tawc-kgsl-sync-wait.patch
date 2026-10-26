@@ -1,0 +1,42 @@
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl.cc b/src/freedreno/vulkan/tu_knl_kgsl.cc
+index e123249be1c..c31c38a4f4d 100644
+--- a/src/freedreno/vulkan/tu_knl_kgsl.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl.cc
+@@ -750,6 +750,28 @@ kgsl_queue_wait_fence(struct tu_queue *queue, uint32_t fence,
+                               fence, abs_timeout_ns);
+ }
+ 
++/* tawc-fork: NDK 27's android-stub libsync no longer resolves sync_wait
++ * at link time for this build, so keep a local poll-based implementation. */
++#include <poll.h>
++static inline int
++tawc_sync_wait(int fd, int timeout)
++{
++   struct pollfd pfd = { .fd = fd, .events = POLLIN };
++   int ret;
++   do {
++      ret = poll(&pfd, 1, timeout);
++   } while (ret == -1 && errno == EINTR);
++   if (ret > 0 && (pfd.revents & (POLLERR | POLLNVAL))) {
++      errno = EINVAL;
++      return -1;
++   }
++   if (ret == 0) {
++      errno = ETIME;
++      return -1;
++   }
++   return ret > 0 ? 0 : -1;
++}
++
+ static VkResult
+ kgsl_syncobj_wait(struct tu_device *device,
+                   struct kgsl_syncobj *s,
+@@ -800,7 +822,7 @@ kgsl_syncobj_wait(struct tu_device *device,
+    }
+ 
+    case KGSL_SYNCOBJ_STATE_FD: {
+-      int ret = sync_wait(s->fd, get_relative_ms(abs_timeout_ns));
++      int ret = tawc_sync_wait(s->fd, get_relative_ms(abs_timeout_ns));
+       if (ret) {
+          assert(errno == ETIME);
+          return VK_TIMEOUT;

@@ -24,10 +24,88 @@ const GL_LINEAR: i32 = 0x2601;
 // Function pointer types
 type FnEglGetNativeClientBufferANDROID = unsafe extern "C" fn(*const c_void) -> *const c_void;
 type FnGlGenTextures = unsafe extern "C" fn(i32, *mut u32);
+type FnGlDeleteTextures = unsafe extern "C" fn(i32, *const u32);
 type FnGlBindTexture = unsafe extern "C" fn(u32, u32);
 type FnGlTexParameteri = unsafe extern "C" fn(u32, u32, i32);
 type FnGlEGLImageTargetTexture2DOES = unsafe extern "C" fn(u32, *const c_void);
 type FnGlGetError = unsafe extern "C" fn() -> u32;
+type FnGlReadPixels = unsafe extern "C" fn(i32, i32, i32, i32, u32, u32, *mut c_void);
+type FnGlPixelStorei = unsafe extern "C" fn(u32, i32);
+
+/// GL entry points needed by the Mesa dmabuf/readback paths. Loaded from
+/// `TAWC_GLES_LIB` (the private Mesa libGLESv2) when set, otherwise the
+/// system libGLESv2. Leaks the library handle: the context lives for the
+/// life of the compositor run.
+#[derive(Clone, Copy)]
+pub struct GlFuncs {
+    pub gen_textures: FnGlGenTextures,
+    pub delete_textures: FnGlDeleteTextures,
+    pub bind_texture: FnGlBindTexture,
+    pub tex_parameteri: FnGlTexParameteri,
+    pub egl_image_target_texture_2d: FnGlEGLImageTargetTexture2DOES,
+    pub get_error: FnGlGetError,
+    pub read_pixels: FnGlReadPixels,
+    pub pixel_storei: FnGlPixelStorei,
+}
+
+impl GlFuncs {
+    pub fn load(_renderer: &GlesRenderer) -> Result<Self, String> {
+        static FUNCS: std::sync::OnceLock<Result<GlFuncs, String>> = std::sync::OnceLock::new();
+        FUNCS
+            .get_or_init(|| Self::load_uncached())
+            .clone()
+    }
+
+    fn load_uncached() -> Result<Self, String> {
+        unsafe {
+            let lib_name = std::env::var("TAWC_GLES_LIB")
+                .unwrap_or_else(|_| "libGLESv2.so".to_string());
+            let gles_lib = libloading::Library::new(&lib_name)
+                .map_err(|e| format!("Failed to load {}: {}", lib_name, e))?;
+
+            let load_gl = |name: &[u8]| -> Result<*const c_void, String> {
+                let sym: libloading::Symbol<*const c_void> = gles_lib
+                    .get(name)
+                    .map_err(|e| format!("{}: {}", String::from_utf8_lossy(&name[..name.len() - 1]), e))?;
+                let ptr = *sym;
+                if ptr.is_null() {
+                    Err(format!(
+                        "{} is null",
+                        String::from_utf8_lossy(&name[..name.len() - 1])
+                    ))
+                } else {
+                    Ok(ptr)
+                }
+            };
+
+            let load_egl = |name: &str| -> Result<*const c_void, String> {
+                let cname = CString::new(name).unwrap();
+                let ptr = egl_ffi::egl::GetProcAddress(cname.as_ptr()) as *const c_void;
+                if ptr.is_null() {
+                    Err(format!("{} not available", name))
+                } else {
+                    Ok(ptr)
+                }
+            };
+
+            let egl_image_target_texture_2d = load_gl(b"glEGLImageTargetTexture2DOES\0")
+                .or_else(|_| load_egl("glEGLImageTargetTexture2DOES"))?;
+
+            let funcs = Self {
+                gen_textures: std::mem::transmute(load_gl(b"glGenTextures\0")?),
+                delete_textures: std::mem::transmute(load_gl(b"glDeleteTextures\0")?),
+                bind_texture: std::mem::transmute(load_gl(b"glBindTexture\0")?),
+                tex_parameteri: std::mem::transmute(load_gl(b"glTexParameteri\0")?),
+                egl_image_target_texture_2d: std::mem::transmute(egl_image_target_texture_2d),
+                get_error: std::mem::transmute(load_gl(b"glGetError\0")?),
+                read_pixels: std::mem::transmute(load_gl(b"glReadPixels\0")?),
+                pixel_storei: std::mem::transmute(load_gl(b"glPixelStorei\0")?),
+            };
+            std::mem::forget(gles_lib);
+            Ok(funcs)
+        }
+    }
+}
 
 /// Loaded EGL/GL extension function pointers for texture import and creation.
 #[derive(Clone, Copy)]

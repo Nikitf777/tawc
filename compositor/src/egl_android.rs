@@ -5,10 +5,23 @@ use std::sync::Arc;
 
 use smithay::backend::egl::display::EGLDisplayHandle;
 use smithay::backend::egl::ffi as egl_ffi;
-use smithay::backend::egl::native::EGLNativeSurface;
-use smithay::backend::egl::EGLError;
+use smithay::backend::egl::native::{EGLNativeSurface, EGLSurfacelessDisplay};
+use smithay::backend::egl::{EGLContext, EGLDisplay, EGLError};
 
 use log::info;
+
+/// Create a private-Mesa surfaceless EGL context. `TAWC_EGL_LIB` must point
+/// at the app-private libEGL before this runs; Smithay's EGL loader reads it
+/// once on first use.
+pub fn create_mesa_egl_context() -> Result<EGLContext, Box<dyn std::error::Error>> {
+    let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }
+        .map_err(|e| format!("Mesa EGLDisplay::new(surfaceless): {:?}", e))?;
+
+    let context = EGLContext::new(&display)
+        .map_err(|e| format!("Mesa EGLContext::new: {:?}", e))?;
+    info!("Mesa surfaceless EGL context ready");
+    Ok(context)
+}
 
 /// Create a raw EGL display, config, and context suitable for GLES 2.0 rendering on Android.
 ///

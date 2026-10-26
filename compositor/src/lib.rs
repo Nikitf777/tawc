@@ -32,6 +32,8 @@ mod clipboard;
 mod compositor;
 mod cursor;
 mod desktop;
+mod dmabuf;
+mod mesa;
 mod render;
 mod placement;
 mod scale;
@@ -258,6 +260,7 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
     init_native_logging();
     cache_jni_globals(&mut env);
     app_paths::init_from_env();
+    let renderer_kind = render::select_renderer();
     // The compositor accepts on the holder's listener.
     activation::start(xwayland != 0);
 
@@ -338,6 +341,7 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
             initial_physical_size,
             initial_xwayland,
             initial_pointer_emulation,
+            renderer_kind,
         ) {
             log::error!("Compositor failed: {}", e);
         }
@@ -1474,9 +1478,10 @@ fn run_compositor(
     initial_physical_size: (i32, i32),
     initial_xwayland: bool,
     initial_pointer_emulation: pointer_emulation::Mode,
+    renderer_kind: render::RendererKind,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // GL setup runs beside the Wayland setup below; see `LazyRenderState`.
-    let render_state = LazyRenderState::spawn();
+    let render_state = LazyRenderState::spawn(renderer_kind);
 
     // --- Wayland display + protocol state ---
     // The output is advertised from the start with the Android panel
@@ -1498,7 +1503,7 @@ fn run_compositor(
         },
     );
 
-    let state = TawcState::new(
+    let mut state = TawcState::new(
         &mut wl_display,
         scale,
         initial_physical_size,
@@ -1507,6 +1512,7 @@ fn run_compositor(
         render_state,
         output,
     );
+    state.init_dmabuf_global(renderer_kind);
 
     // --- Run ---
     event_loop::run(

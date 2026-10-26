@@ -33,6 +33,7 @@ use smithay::reexports::wayland_protocols_misc::server_decoration::server::{
 };
 use smithay::utils::{Logical, Point, Rectangle, Serial, Size};
 use smithay::wayland::buffer::BufferHandler;
+use smithay::wayland::dmabuf::{DmabufGlobal, DmabufState};
 use smithay::wayland::compositor::{
     self, CompositorClientState, CompositorHandler, CompositorState,
 };
@@ -122,6 +123,10 @@ pub struct TawcState {
     pub loop_handle: Option<LoopHandle<'static, TawcState>>,
     pub compositor_state: CompositorState,
     pub shm_state: ShmState,
+    /// `zwp_linux_dmabuf_v1` delegate state. The global itself is created
+    /// lazily once the Mesa renderer is known to support dmabuf imports.
+    pub dmabuf_state: DmabufState,
+    pub dmabuf_global: Option<DmabufGlobal>,
     pub xdg_shell_state: XdgShellState,
     // Held to keep the xdg-output manager global registered for the
     // display lifetime; Smithay's delegate macro reaches it through the
@@ -351,6 +356,7 @@ impl TawcState {
             KdeDecorationState::new::<Self>(&dh, KdeDefaultDecorationMode::Server);
         let fractional_scale_manager_state = FractionalScaleManagerState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, []);
+        let dmabuf_state = DmabufState::new();
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let ext_data_control_state = ExtDataControlState::new::<Self, _>(&dh, None, |_| true);
         let wlr_data_control_state = WlrDataControlState::new::<Self, _>(&dh, None, |_| true);
@@ -421,6 +427,8 @@ impl TawcState {
             loop_handle: None,
             compositor_state,
             shm_state,
+            dmabuf_state,
+            dmabuf_global: None,
             xdg_shell_state,
             output_manager_state,
             xdg_decoration_state,

@@ -16,3 +16,5 @@
 !gfxstream-patches/**
 !rutabaga-patches/
 !rutabaga-patches/**
+!smithay-patches/
+!smithay-patches/**

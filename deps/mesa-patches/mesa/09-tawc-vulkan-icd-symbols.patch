@@ -1,0 +1,38 @@
+From: tawc
+Origin: own
+
+Allow building an app-private Khronos ICD from the same Android Turnip
+build. Android HAL modules export only `HMI`; a private loader needs
+`vk_icdGetInstanceProcAddr` and friends, which live behind vulkan.sym.
+
+diff --git a/meson.options b/meson.options
+index 63d78bee41e..ae9e0bdf618 100644
+--- a/meson.options
++++ b/meson.options
+@@ -29,6 +29,13 @@ option(
+   description : 'the window system EGL assumes for EGL_DEFAULT_DISPLAY',
+ )
+ 
++option(
++  'tawc-vulkan-icd',
++  type : 'boolean',
++  value : false,
++  description : 'TAWC: export Khronos ICD symbols instead of the Android HAL module',
++)
++
+ option(
+   'android-stub',
+   type : 'boolean',
+diff --git a/src/vulkan/meson.build b/src/vulkan/meson.build
+index 614a33a47c6..c22c582217c 100644
+--- a/src/vulkan/meson.build
++++ b/src/vulkan/meson.build
+@@ -6,7 +6,7 @@ vk_api_xml = files('registry/vk.xml')
+ vulkan_icd_link_args = []
+ vulkan_icd_link_depends = []
+ 
+-if with_platform_android
++if with_platform_android and not get_option('tawc-vulkan-icd')
+   vulkan_icd_symbols = files('vulkan-icd-android-symbols.txt')
+   if with_ld_version_script
+     vulkan_icd_link_args += ['-Wl,--version-script', join_paths(meson.current_source_dir(), 'vulkan-android.sym')]

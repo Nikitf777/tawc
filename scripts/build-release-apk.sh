@@ -117,7 +117,7 @@ ALIGNED="$ROOT_DIR/app/build/outputs/apk/release/app-release-aligned.apk"
 
 if [ "$DO_BUILD" -eq 1 ]; then
     echo "=== Building release APK (graphics=$GRAPHICS) ==="
-    ( cd "$ROOT_DIR" && ./gradlew "-PtawcGraphics=$GRAPHICS" assembleRelease --quiet )
+    ( cd "$ROOT_DIR" && ./gradlew "-PtawcGraphics=$GRAPHICS" -PtawcMesaServer=false assembleRelease --quiet )
 fi
 
 [ -f "$UNSIGNED" ] || { echo "ERROR: $UNSIGNED not found (drop --no-build to build it)" >&2; exit 1; }

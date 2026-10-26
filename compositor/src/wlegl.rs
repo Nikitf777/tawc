@@ -140,9 +140,50 @@ pub struct WleglBufferData {
     pub height: i32,
     pub has_alpha: bool,
     pub origin: BufferOrigin,
-    importer: AhbTextureImporter,
+    /// Vendor-mode AHB importer. `None` in Mesa mode.
+    importer: Option<AhbTextureImporter>,
+    /// Mesa-mode dma-buf view of the same allocation.
+    dmabuf: Option<crate::mesa::DmaBufInfo>,
+    mesa: bool,
     /// Imported on first render; reused thereafter.
     pub texture: Mutex<Option<GlesTexture>>,
+}
+
+fn ahb_format_fourcc(format: u32) -> Option<u32> {
+    // Android HAL pixel formats (hardware/gralloc.h). 0x22 is
+    // HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED, which libhybris clients
+    // effectively use as RGBX.
+    match format {
+        1 => Some(0x34324241),          // RGBA_8888 -> DRM_FORMAT_ABGR8888
+        2 | 0x22 => Some(0x34324258),   // RGBX_8888 / IMPLEMENTATION_DEFINED -> XBGR8888
+        3 => Some(0x34324258),          // RGB_888 -> XBGR8888 (best effort)
+        4 => Some(0x36314752),          // RGB_565 -> DRM_FORMAT_RGB565
+        5 => Some(0x34325241),          // BGRA_8888 -> DRM_FORMAT_ARGB8888
+        _ => None,
+    }
+}
+
+fn ahb_format_bpp(format: u32) -> u32 {
+    match format {
+        4 => 2,
+        1 | 2 | 3 | 5 | 0x22 => 4,
+        _ => 4,
+    }
+}
+
+fn qcom_modifier(ints: &[i32]) -> u64 {
+    const GMSM: i32 = 0x6d736d67;
+    const QCOM_COMPRESSED: u64 = 0x0500000000000001;
+    for pair in ints.windows(2) {
+        if pair[0] == GMSM {
+            return if pair[1] & 0x0800_0000 != 0 {
+                QCOM_COMPRESSED
+            } else {
+                0
+            };
+        }
+    }
+    u64::MAX
 }
 
 fn android_format_has_alpha(format: u32) -> bool {
@@ -172,7 +213,8 @@ impl WleglBufferData {
         ahb: *mut ndk_sys::AHardwareBuffer,
         width: i32,
         height: i32,
-        importer: AhbTextureImporter,
+        importer: Option<AhbTextureImporter>,
+        mesa: bool,
     ) -> Self {
         Self {
             ahb,
@@ -181,6 +223,8 @@ impl WleglBufferData {
             has_alpha: true,
             origin: BufferOrigin::Gfxstream,
             importer,
+            dmabuf: if mesa { crate::mesa::ahb_dmabuf_info(ahb) } else { None },
+            mesa,
             texture: Mutex::new(None),
         }
     }
@@ -214,6 +258,21 @@ impl ExternalBuffer for WleglBufferData {
         }
 
         let texture = (|| {
+            if self.mesa {
+                let info = self.dmabuf.ok_or_else(|| -> ExternalBufferImportError {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Mesa mode: AHB has no dma-buf metadata",
+                    )
+                    .into()
+                })?;
+                return crate::mesa::import_dmabuf_texture(renderer, &info).map_err(
+                    |err| -> ExternalBufferImportError {
+                        std::io::Error::new(std::io::ErrorKind::Other, err).into()
+                    },
+                );
+            }
+
             unsafe {
                 renderer
                     .egl_context()
@@ -222,6 +281,10 @@ impl ExternalBuffer for WleglBufferData {
             }
             let display = renderer.egl_context().display().get_display_handle();
             self.importer
+                .ok_or_else(|| -> ExternalBufferImportError {
+                    std::io::Error::new(std::io::ErrorKind::Other, "AHB importer unavailable")
+                        .into()
+                })?
                 .import_ahb(renderer, **display, self.ahb_raw(), self.width, self.height)
                 .map_err(|err| -> ExternalBufferImportError {
                     std::io::Error::new(std::io::ErrorKind::Other, err).into()
@@ -240,6 +303,11 @@ impl ExternalBuffer for WleglBufferData {
 impl Drop for WleglBufferData {
     fn drop(&mut self) {
         WLEGL_BUFFER_DESTROY_TOTAL.fetch_add(1, Ordering::Relaxed);
+        if let Some(info) = self.dmabuf.take() {
+            if info.fd >= 0 {
+                unsafe { libc::close(info.fd) };
+            }
+        }
         if !self.ahb.is_null() {
             unsafe { tawc_wlegl_buffer_release(self.ahb) };
             self.ahb = ptr::null_mut();
@@ -316,10 +384,12 @@ impl Dispatch<AndroidWlegl, ()> for TawcState {
                 native_handle,
             } => {
                 // GL init failed; the compositor is already stopping.
-                let Some(importer) = state.render.get().map(|r| r.importer) else {
+                let Some(render) = state.render.get() else {
                     resource.post_error(android_wlegl::Error::BadValue, "renderer unavailable");
                     return;
                 };
+                let importer = render.importer;
+                let mesa = render.kind.is_mesa();
                 let handle_data = match native_handle.data::<WleglHandleData>() {
                     Some(d) => d,
                     None => {
@@ -359,6 +429,28 @@ impl Dispatch<AndroidWlegl, ()> for TawcState {
                 LAST_WLEGL_HEIGHT.store(h_u, Ordering::Relaxed);
                 LAST_WLEGL_FORMAT.store(fmt_u, Ordering::Relaxed);
 
+                let dmabuf = if mesa {
+                    ahb_format_fourcc(fmt_u).and_then(|fourcc| {
+                        raw_fds.first().and_then(|fd| {
+                            let dup = unsafe { libc::dup(*fd) };
+                            if dup < 0 {
+                                return None;
+                            }
+                            let bpp = ahb_format_bpp(fmt_u);
+                            Some(crate::mesa::DmaBufInfo {
+                                fd: dup,
+                                fourcc,
+                                stride: stride_u.max(w_u) * bpp,
+                                modifier: qcom_modifier(&ints),
+                                width: w_u,
+                                height: h_u,
+                            })
+                        })
+                    })
+                } else {
+                    None
+                };
+
                 let ahb = unsafe {
                     tawc_wlegl_import(
                         w_u,
@@ -373,6 +465,9 @@ impl Dispatch<AndroidWlegl, ()> for TawcState {
                     )
                 };
                 if ahb.is_null() {
+                    if let Some(info) = dmabuf {
+                        unsafe { libc::close(info.fd) };
+                    }
                     // Leave fds owned by WleglHandleData; they'll be closed
                     // on handle destroy.
                     // post_error is fatal (kills the client), so skipping data_init.init() is safe.
@@ -390,6 +485,23 @@ impl Dispatch<AndroidWlegl, ()> for TawcState {
                 }
                 drop(inner);
 
+                // Prefer the metadata read back from the AHB's real
+                // native_handle_t when the platform exposes it; the wire
+                // ints are the fallback (libhybris AHB gralloc backend).
+                let dmabuf = if mesa {
+                    match crate::mesa::ahb_dmabuf_info(ahb) {
+                        Some(info) => {
+                            if let Some(old) = dmabuf {
+                                unsafe { libc::close(old.fd) };
+                            }
+                            Some(info)
+                        }
+                        None => dmabuf,
+                    }
+                } else {
+                    None
+                };
+
                 let data = WleglBufferData {
                     ahb,
                     width,
@@ -397,6 +509,8 @@ impl Dispatch<AndroidWlegl, ()> for TawcState {
                     has_alpha: android_format_has_alpha(fmt_u),
                     origin: BufferOrigin::Hybris,
                     importer,
+                    dmabuf,
+                    mesa,
                     texture: Mutex::new(None),
                 };
                 data_init.init(id, ExternalBufferData::new(data));

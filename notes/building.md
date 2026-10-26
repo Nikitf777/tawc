@@ -253,7 +253,7 @@ Delete `deps/.offline` if one ever ends up in a dev checkout.
 | `./deps/termux-app/`                       | Gradle included projects `:terminal-emulator` + `:terminal-view` (in-app terminal; ensured at settings-evaluation time by `settings.gradle.kts`) |
 | `./deps/xwayland-src/<lib>/` (~22 repos)   | `scripts/build-xwayland.sh`               |
 | `./deps/smithay/`                     | Rust compositor (`scripts/ensure-deps.sh smithay`; consumed via `[patch.crates-io]` path in `compositor/Cargo.toml`) |
-| `./deps/mesa/`                             | `scripts/build-mesa-gfxstream.sh` (gfxstream-vk and Mesa-Zink assets) |
+| `./deps/mesa/`                             | `scripts/build-mesa-gfxstream.sh` (gfxstream-vk and Mesa-Zink assets); `scripts/build-mesa-server.sh` (bionic server Mesa/Turnip) |
 | `./deps/gfxstream/`                        | `scripts/build-gfxstream-backend.sh`      |
 | `./deps/rutabaga_gfx/`                     | `scripts/ensure-deps.sh --patches rutabaga_gfx deps/rutabaga-patches/rutabaga_gfx`; Rust compositor kumquat server dep |
 | `./deps/openssh-portable/`                 | `remote/sftp-server/build.sh` (remote access sftp-server) |
@@ -452,6 +452,24 @@ Mesa's `wayland-protocols` XML comes from the pinned
 That keeps Mesa's generated protocol inputs in sync with the Mesa
 source even when distro sysroot packages lag.
 
+### Server Mesa GLES / Turnip (bionic private stack → ships in APK as asset)
+
+`scripts/build-mesa-server.sh` builds the compositor's own Mesa stack for
+Android bionic: surfaceless EGL/GLES with Zink, Turnip with the KGSL KMD,
+a minimal Vulkan loader shim, and libdrm. It uses the pinned `deps/mesa`
+and `deps/xwayland-src/libdrm` checkouts, the NDK clang (API 29), and the
+patches 07–11 in `deps/mesa-patches/mesa/`. Output is
+`build/mesa-server-aarch64/mesa-server.tar`; Gradle's
+`buildMesaServerArm64-v8a` packs it under
+`assets/mesa-server/arm64-v8a/`, and `CompositorService` extracts it to
+`<filesDir>/mesa-server/`. aarch64 only. See
+[mesa-renderer.md](mesa-renderer.md).
+
+```bash
+scripts/build-mesa-server.sh
+scripts/build-mesa-server.sh --clean
+```
+
 ### Xwayland (binary + libs → ships in APK as asset)
 
 Cross-built per APK ABI. NDK clang against bionic — same toolchain as
@@ -612,7 +630,8 @@ Invokes the Rust compositor build, copies its output into
 rutabaga setup; cross-builds proot (when enabled) and tawcroot; builds
 the gfxstream host backend for each enabled ABI only when the gfxstream
 backend is enabled; builds/packs Mesa gfxstream-vk and/or Mesa-Zink
-assets when their backends are enabled; builds/packs libhybris for
+assets when their backends are enabled; builds/packs the server Mesa stack
+for arm64; builds/packs libhybris for
 arm64; builds/packs Xwayland for arm64 unless `--no-xwayland` is passed;
 then produces
 `app/build/outputs/apk/debug/app-debug.apk`.
@@ -627,7 +646,9 @@ and drops `libgfxstream_backend.so`; disabling both gfxstream and
 libhybris-zink skips `scripts/build-mesa-gfxstream.sh` entirely.
 `scripts/build-release-apk.sh` defaults to `libhybris,cpu` so
 production APKs do not ship libhybris-zink or gfxstream/kumquat unless
-`--graphics=...` or `TAWC_RELEASE_GRAPHICS` opts them back in.
+`--graphics=...` or `TAWC_RELEASE_GRAPHICS` opts them back in. The server
+Mesa stack is likewise off for tasks whose name contains `release` (or
+`-PtawcMesaServer=false`); debug builds default it on.
 
 `-PtawcAllFilesAccess=false` strips `MANAGE_EXTERNAL_STORAGE` from the
 manifest (build-type overlay `app/src/overlays/no-all-files-access/`)

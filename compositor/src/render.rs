@@ -131,20 +131,24 @@ fn debug_server_renderer_property() -> Option<String> {
     None
 }
 
-pub fn select_renderer() -> RendererKind {
+pub fn select_renderer(setting: RendererKind) -> RendererKind {
     // Smithay's EGL loader binds one libEGL per process, so the renderer
-    // choice is fixed for the process lifetime. Changing the debug property
-    // requires force-stopping the app, not just restarting the compositor.
+    // choice is fixed for the process lifetime. Changing the setting or
+    // debug property requires restarting the app, not just the compositor.
     static SELECTED: std::sync::OnceLock<RendererKind> = std::sync::OnceLock::new();
-    *SELECTED.get_or_init(select_renderer_inner)
+    *SELECTED.get_or_init(|| select_renderer_inner(setting))
 }
 
-fn select_renderer_inner() -> RendererKind {
-    let requested = debug_server_renderer_property()
-        .or_else(|| std::env::var("TAWC_SERVER_RENDERER").ok())
-        .unwrap_or_default();
-    if requested == "vendor" {
-        info!("server renderer: vendor (explicit TAWC_SERVER_RENDERER=vendor)");
+fn select_renderer_inner(setting: RendererKind) -> RendererKind {
+    let override_value = debug_server_renderer_property()
+        .or_else(|| std::env::var("TAWC_SERVER_RENDERER").ok());
+    let requested = match override_value.as_deref() {
+        Some("vendor") => RendererKind::Vendor,
+        Some("mesa") => RendererKind::Mesa,
+        _ => setting,
+    };
+    if requested == RendererKind::Vendor {
+        info!("server renderer: vendor");
         return RendererKind::Vendor;
     }
 

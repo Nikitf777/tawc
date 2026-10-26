@@ -256,11 +256,17 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeStartComp
     display_height_px: jint,
     xwayland: jboolean,
     pointer_emulation: jint,
+    server_renderer: jint,
 ) -> jboolean {
     init_native_logging();
     cache_jni_globals(&mut env);
     app_paths::init_from_env();
-    let renderer_kind = render::select_renderer();
+    let requested_renderer = if server_renderer == 1 {
+        render::RendererKind::Mesa
+    } else {
+        render::RendererKind::Vendor
+    };
+    let renderer_kind = render::select_renderer(requested_renderer);
     // The compositor accepts on the holder's listener.
     activation::start(xwayland != 0);
 

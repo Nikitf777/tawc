@@ -140,6 +140,8 @@ object NativeBridge {
         xwayland: Boolean,
         /** [me.phie.tawc.PointerEmulation.ordinal]. */
         pointerEmulation: Int,
+        /** [me.phie.tawc.ServerRenderer.ordinal]. */
+        serverRenderer: Int,
     ): Boolean
 
     /** Stop the Rust compositor thread and wait until it is gone. The

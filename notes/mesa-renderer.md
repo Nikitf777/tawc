@@ -9,9 +9,12 @@ aarch64 Adreno/KGSL debug builds; release builds keep the vendor renderer.
 `TAWC_SERVER_RENDERER` process env still override the setting for debug
 harnesses. The choice is fixed for the process lifetime (Smithay's EGL
 loader binds one libEGL), so changing it prompts for an app restart. Choosing
-Later keeps the setting pending; the home menu then offers "Restart
-compositor", which relaunches the app through an alarm + broadcast receiver
-(`AppRestart`) so the new process loads the selected EGL library.
+Later keeps the setting pending; the home menu always offers "Restart
+compositor". `AppRestart` starts a transparent `RestartActivity` in a
+separate `:restart` process while the current Activity is still visible,
+kills the old process, and the trampoline starts MainActivity once the old
+pid is gone. Android 14 blocks an alarm/broadcast from bringing the
+singleTask MainActivity back directly (`BAL_BLOCK`).
 `scripts/build-release-apk.sh` passes `-PtawcMesaServer=false`, so release
 APKs still ship the vendor renderer and no server Mesa assets until the
 device test matrix is green.

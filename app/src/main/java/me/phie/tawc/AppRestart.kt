@@ -1,35 +1,34 @@
 package me.phie.tawc
 
-import android.app.AlarmManager
-import android.app.PendingIntent
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 
 /**
- * Relaunch the app process. The compositor's EGL library is bound once per
- * process, so applying a new server renderer requires a fresh process.
+ * Relaunch the app process so the compositor loads the selected EGL library.
  *
- * Schedule a broadcast first: killing the process from inside its own
- * activity would otherwise cancel the launch. The broadcast receiver sends
- * the activity PendingIntent with the background-activity-start opt-in that
- * AlarmManager's own activity PendingIntent lacks on Android 14+.
+ * A background alarm/broadcast cannot bring the singleTask MainActivity back
+ * on Android 14 (BAL_BLOCK). Start a transparent trampoline in a separate
+ * process while the current Activity is still visible, kill this process,
+ * and let the trampoline start MainActivity once the old process is gone.
  */
 object AppRestart {
-    internal const val REQUEST_CODE = 0x54415743 // "TAWC"
+    internal const val EXTRA_OLD_PID = "me.phie.tawc.extra.OLD_PID"
 
     fun restart(context: Context) {
         val app = context.applicationContext
-        val intent = Intent(app, AppRestartReceiver::class.java)
-        val pending = PendingIntent.getBroadcast(
-            app,
-            REQUEST_CODE,
-            intent,
-            PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        app.getSystemService(AlarmManager::class.java)
-            .set(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 300, pending)
-        Process.killProcess(Process.myPid())
+        val oldPid = Process.myPid()
+        val intent = Intent(app, RestartActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra(EXTRA_OLD_PID, oldPid)
+        }
+        app.startActivity(intent)
+        // Give the trampoline process a moment to start before this process
+        // disappears. It waits for this pid to vanish before starting the UI.
+        Handler(Looper.getMainLooper()).postDelayed({
+            Process.killProcess(oldPid)
+        }, 800)
     }
 }

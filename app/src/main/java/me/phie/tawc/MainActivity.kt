@@ -38,8 +38,6 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.drawerlayout.widget.DrawerLayout
 import com.google.android.material.floatingactionbutton.FloatingActionButton
-import me.phie.tawc.compositor.CompositorService
-import me.phie.tawc.compositor.NativeBridge
 import me.phie.tawc.install.DistroInfoActivity
 import me.phie.tawc.install.DistroInfoView
 import me.phie.tawc.install.InstallActivity
@@ -405,14 +403,8 @@ class MainActivity : AppCompatActivity() {
         menu.item(ORDER_APP, R.string.title_task_manager) {
             startActivity(Intent(this, TaskManagerActivity::class.java))
         }
-        if (Settings.serverRendererChangedSinceStart) {
-            menu.item(ORDER_APP, R.string.action_restart_compositor) {
-                AppRestart.restart(this)
-            }
-        } else if (NativeBridge.nativeIsCompositorRunning()) {
-            menu.item(ORDER_APP, R.string.action_stop_compositor) {
-                CompositorService.stop()
-            }
+        menu.item(ORDER_APP, R.string.action_restart_compositor) {
+            AppRestart.restart(this)
         }
         popup.show()
     }

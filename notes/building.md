@@ -253,7 +253,7 @@ Delete `deps/.offline` if one ever ends up in a dev checkout.
 | `./deps/termux-app/`                       | Gradle included projects `:terminal-emulator` + `:terminal-view` (in-app terminal; ensured at settings-evaluation time by `settings.gradle.kts`) |
 | `./deps/xwayland-src/<lib>/` (~22 repos)   | `scripts/build-xwayland.sh`               |
 | `./deps/smithay/`                     | Rust compositor (`scripts/ensure-deps.sh smithay`; consumed via `[patch.crates-io]` path in `compositor/Cargo.toml`) |
-| `./deps/mesa/`                             | `scripts/build-mesa-gfxstream.sh` (gfxstream-vk and Mesa-Zink assets); `scripts/build-mesa-server.sh` (bionic server Mesa/Turnip) |
+| `./deps/mesa/`                             | Git submodule (`better-android-support`); `scripts/build-mesa-server.sh` (bionic server Mesa/Turnip) |
 | `./deps/gfxstream/`                        | `scripts/build-gfxstream-backend.sh`      |
 | `./deps/rutabaga_gfx/`                     | `scripts/ensure-deps.sh --patches rutabaga_gfx deps/rutabaga-patches/rutabaga_gfx`; Rust compositor kumquat server dep |
 | `./deps/openssh-portable/`                 | `remote/sftp-server/build.sh` (remote access sftp-server) |
@@ -419,6 +419,9 @@ The build script invokes `make` per-subdir to control this.
 
 ### libvulkan_gfxstream.so (Mesa gfxstream-vk → ships in APK as asset, gfxstream-bridge GPU path)
 
+> Removed in this external-only fork: the gfxstream client backend and
+> `scripts/build-mesa-gfxstream.sh` are no longer built.
+
 Cross-built once per enabled ABI. `aarch64` uses the same
 `aarch64-linux-gnu` toolchain as libhybris; `x86_64` uses the host
 glibc compiler. Builds with `-Dvirtgpu_kumquat=true` enabled — Mesa
@@ -456,9 +459,10 @@ source even when distro sysroot packages lag.
 
 `scripts/build-mesa-server.sh` builds the compositor's own Mesa stack for
 Android bionic: surfaceless EGL/GLES with Zink, Turnip with the KGSL KMD,
-a minimal Vulkan loader shim, and libdrm. It uses the pinned `deps/mesa`
-and `deps/xwayland-src/libdrm` checkouts, the NDK clang (API 29), and the
-patches 07–11 in `deps/mesa-patches/mesa/`. Output is
+a minimal Vulkan loader shim, and libdrm. It uses the `deps/mesa` git
+submodule (fork branch `better-android-support`) and the
+`deps/xwayland-src/libdrm` checkout, the NDK clang (API 29), and the
+remaining `deps/mesa-patches/mesa/07-tawc-zink-vulkan-lib.patch`. Output is
 `build/mesa-server-aarch64/mesa-server.tar`; Gradle's
 `buildMesaServerArm64-v8a` packs it under
 `assets/mesa-server/arm64-v8a/`, and `CompositorService` extracts it to

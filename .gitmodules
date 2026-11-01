@@ -1,0 +1,4 @@
+[submodule "deps/mesa"]
+	path = deps/mesa
+	url = git@ssh.gitlab.freedesktop.org:nikitf777/mesa.git
+	branch = better-android-support

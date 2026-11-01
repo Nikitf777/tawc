@@ -4,8 +4,9 @@
 #
 # Public API (after sourcing):
 #   dep_dir <name>     -- echo absolute checkout path for <name>
-#   dep_ensure <name>  -- clone if missing, verify HEAD == pinned commit.
-#                         Errors on commit mismatch (uncommitted edits OK).
+#   dep_ensure <name>  -- clone or initialize a submodule if missing,
+#                         verify HEAD == pinned commit. Errors on commit
+#                         mismatch (uncommitted edits OK).
 #   dep_apply_patches <name> <patch-dir> [sed-expr]
 #                      -- ensure <name>, reset/clean it if the patch hash
 #                         changed, then apply *.patch from <patch-dir>.
@@ -116,6 +117,24 @@ dep_dir() {
     printf '%s\n' "$DEP_DEST"
 }
 
+# True if $DEP_DEST has a git dir. Submodule checkouts store `.git` as a
+# file pointing into the superproject, so `-d` is not enough.
+_dep_has_git() {
+    [ -e "$DEP_DEST/.git" ]
+}
+
+# Print the .gitmodules section name for $DEP_DEST, or nothing. Used to
+# initialize a missing submodule with `git submodule update` instead of
+# cloning a second copy over the gitlink.
+_dep_submodule_name() {
+    local rel="${DEP_DEST#"$DEPS_REPO_DIR"/}" name
+    [ -f "$DEPS_REPO_DIR/.gitmodules" ] || return 1
+    name="$(git config -f "$DEPS_REPO_DIR/.gitmodules" --get-regexp '^submodule\..*\.path$' \
+        | awk -v want="$rel" '$2 == want { sub(/^submodule\./, "", $1); sub(/\.path$/, "", $1); print $1; exit }')"
+    [ -n "$name" ] || return 1
+    printf '%s\n' "$name"
+}
+
 # True iff $DEP_COMMIT exists locally as a reachable commit.
 _dep_have_commit() {
     git -C "$DEP_DEST" rev-parse --verify --quiet "$DEP_COMMIT^{commit}" >/dev/null
@@ -142,12 +161,20 @@ _dep_fetch_commit() {
     _dep_have_commit
 }
 
-# Fresh clone of $DEP_REPO into $DEP_DEST. Uses --branch when we have a
-# ref hint (cheaper for tags / single branches); otherwise full clone.
+# Fresh clone of $DEP_REPO into $DEP_DEST, or `git submodule update` when
+# the path is recorded in .gitmodules. Uses --branch when we have a ref
+# hint (cheaper for tags / single branches); otherwise full clone.
 # A pre-existing non-git $DEP_DEST (e.g. left behind by Gradle's
 # outputs.dir declaration) is wiped — git refuses non-empty targets.
 _dep_clone() {
-    [ -e "$DEP_DEST" ] && [ ! -d "$DEP_DEST/.git" ] && rm -rf "$DEP_DEST"
+    local rel="${DEP_DEST#"$DEPS_REPO_DIR"/}"
+    if _dep_submodule_name >/dev/null; then
+        _deps_check_online "submodule '$DEP_NAME'" || return 1
+        echo "==> initializing submodule $rel"
+        git -C "$DEPS_REPO_DIR" submodule update --init --recursive "$rel"
+        return
+    fi
+    [ -e "$DEP_DEST" ] && ! _dep_has_git && rm -rf "$DEP_DEST"
     mkdir -p "$(dirname "$DEP_DEST")"
     if [ "$DEP_REF" != "-" ] && [ -n "$DEP_REF" ]; then
         echo "==> cloning $DEP_NAME @ $DEP_REF -> ${DEP_DEST#$DEPS_REPO_DIR/}"
@@ -202,7 +229,7 @@ _dep_with_lock() {
 _deps_verify_all_inner() {
     local name repo commit ref dest actual bad=0
     while IFS=$'\t' read -r name repo commit ref dest; do
-        [ -d "$DEPS_REPO_DIR/$dest/.git" ] || continue
+        [ -e "$DEPS_REPO_DIR/$dest/.git" ] || continue
         actual="$(git -C "$DEPS_REPO_DIR/$dest" rev-parse HEAD 2>/dev/null || echo '<unreadable>')"
         if [ "$actual" != "$commit" ]; then
             echo "ERROR: dep '$name' is at the wrong commit." >&2
@@ -235,7 +262,7 @@ deps_verify_all() {
 # state and the artifact rebuilds from the pin.
 _dep_tree_state_one() {
     _dep_lookup "$1" || return 1
-    if [ ! -d "$DEP_DEST/.git" ]; then
+    if ! _dep_has_git; then
         printf '%s %s -\n' "$DEP_NAME" "$DEP_COMMIT"
         return 0
     fi
@@ -287,7 +314,7 @@ _deps_verify_all_once() {
 }
 
 _dep_ensure_inner() {
-    if [ ! -d "$DEP_DEST/.git" ]; then
+    if ! _dep_has_git; then
         _deps_check_online "dep '$DEP_NAME'" || return 1
         _dep_clone || return 1
         if ! _dep_have_commit; then
@@ -347,7 +374,7 @@ dep_apply_patches() {
 }
 
 _dep_reset_inner() {
-    if [ ! -d "$DEP_DEST/.git" ]; then
+    if ! _dep_has_git; then
         _dep_clone || return 1
     fi
     if ! _dep_have_commit; then

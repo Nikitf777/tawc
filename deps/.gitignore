@@ -11,8 +11,6 @@
 !xwayland-patches/
 !xwayland-patches/**
 !mesa/
-!mesa-patches/
-!mesa-patches/**
 !gfxstream-patches/
 !gfxstream-patches/**
 !rutabaga-patches/

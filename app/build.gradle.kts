@@ -250,10 +250,9 @@ tawcAbis.forEach { abi ->
                 "$tawcRoot/compositor/native/mesa_ahb.c",
                 "$tawcRoot/compositor/native/vulkan_shim.c",
             )
-            inputs.dir("$tawcRoot/deps/mesa-patches")
             inputs.file("$tawcRoot/deps/deps.list")
             inputs.file("$tawcRoot/scripts/lib/deps.sh")
-            inputs.property("depTreeState", depTreeState("mesa"))
+            inputs.property("depTreeState", depTreeState("mesa", "vulkan-headers", "vulkan-loader"))
             outputs.file(mesaServerTar)
         }
         val packMesaServerTask = tasks.register<Copy>("packMesaServer$capAbi") {

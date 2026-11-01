@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build the compositor's app-private Mesa GLES stack for Android bionic:
 #   - libEGL.so / libGLESv2.so / libgallium-*.so with Zink (surfaceless)
+#   - libvulkan_tawc.so (upstream Khronos Vulkan loader)
 #   - libvulkan_freedreno.so (Turnip, KGSL, Khronos ICD symbols)
-#   - libvulkan_tawc.so (minimal loader shim for the Turnip ICD)
 #   - libdrm.so (Mesa's HAVE_LIBDRM / EGL_EXT_image_dma_buf_import)
 #
 # Output: build/mesa-server-aarch64/mesa-server.tar, packed by Gradle into
@@ -41,17 +41,19 @@ AR_BIN="$NDK_BIN/llvm-ar"
 STRIP_BIN="$NDK_BIN/llvm-strip"
 [ -x "$CC_BIN" ] || { echo "ERROR: NDK clang missing at $CC_BIN" >&2; exit 1; }
 
-for tool in meson ninja pkg-config patchelf; do
+for tool in meson ninja pkg-config patchelf cmake; do
     command -v "$tool" >/dev/null || { echo "ERROR: '$tool' not on PATH" >&2; exit 1; }
 done
 
 MESA_DIR="$(dep_dir mesa)"
 LIBDRM_DIR="$(dep_dir libdrm)"
-PATCH_DIR="$REPO_DIR/deps/mesa-patches/mesa"
+VULKAN_HEADERS_DIR="$(dep_dir vulkan-headers)"
+VULKAN_LOADER_DIR="$(dep_dir vulkan-loader)"
 OUT="$REPO_DIR/build/mesa-server-aarch64"
 STAGE="$OUT/stage"
 PREFIX="$OUT/install"
 LIBDRM_PREFIX="$OUT/libdrm-prefix"
+VULKAN_HEADERS_PREFIX="$OUT/vulkan-headers-prefix"
 SHIMS="$OUT/include-shims"
 PC="$OUT/pkgconfig"
 
@@ -181,12 +183,46 @@ Libs: -L\${libdir} -ldrm
 Cflags: -I\${includedir} -I\${includedir}/libdrm
 EOF
 
+# ── Upstream Khronos Vulkan loader ──
+# Android preloads its own libvulkan and ignores VK_ICD_FILENAMES for
+# app-private ICDs. Build the upstream loader under a private name; Mesa's
+# generic vulkan-loader-name option makes Zink open it through libgallium's
+# $ORIGIN runpath.
+dep_ensure vulkan-headers vulkan-loader
+HEADERS_BUILD="$OUT/vulkan-headers-build"
+LOADER_BUILD="$OUT/vulkan-loader-build"
+if [ ! -f "$VULKAN_HEADERS_PREFIX/include/vulkan/vulkan.h" ]; then
+    rm -rf "$HEADERS_BUILD" "$VULKAN_HEADERS_PREFIX"
+    cmake -S "$VULKAN_HEADERS_DIR" -B "$HEADERS_BUILD" -G Ninja \
+        -DCMAKE_INSTALL_PREFIX="$VULKAN_HEADERS_PREFIX" \
+        -DCMAKE_BUILD_TYPE=Release
+    cmake --install "$HEADERS_BUILD"
+fi
+if [ ! -f "$LOADER_BUILD/build.ninja" ]; then
+    rm -rf "$LOADER_BUILD"
+    cmake -S "$VULKAN_LOADER_DIR" -B "$LOADER_BUILD" -G Ninja \
+        -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+        -DCMAKE_C_COMPILER="$CC_BIN" -DCMAKE_CXX_COMPILER="$CXX_BIN" \
+        -DCMAKE_AR="$AR_BIN" \
+        -DCMAKE_RANLIB="${AR_BIN%ar}ranlib" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_PREFIX_PATH="$VULKAN_HEADERS_PREFIX" \
+        -DVULKAN_HEADERS_INSTALL_DIR="$VULKAN_HEADERS_PREFIX" \
+        -DBUILD_TESTS=OFF -DBUILD_LAYERS=OFF \
+        -DBUILD_WSI_XCB_SUPPORT=OFF -DBUILD_WSI_XLIB_SUPPORT=OFF \
+        -DBUILD_WSI_XLIB_XRANDR_SUPPORT=OFF \
+        -DBUILD_WSI_WAYLAND_SUPPORT=OFF \
+        -DBUILD_WSI_DIRECTFB_SUPPORT=OFF
+fi
+cmake --build "$LOADER_BUILD"
+
 export PKG_CONFIG_LIBDIR="$PC"
 export PKG_CONFIG_PATH="$PC"
 export CPATH="$SHIMS:$LIBDRM_PREFIX/usr/include:$LIBDRM_PREFIX/usr/include/libdrm:$REPO_DIR/deps/android-headers"
 
 # ── Mesa (surfaceless EGL/GLES + Zink) ──
-dep_apply_patches mesa "$PATCH_DIR"
+dep_ensure mesa
 SERVER_BUILD="$MESA_DIR/build-android-server-aarch64"
 if [ ! -f "$SERVER_BUILD/build.ninja" ]; then
     rm -rf "$SERVER_BUILD"
@@ -198,6 +234,7 @@ if [ ! -f "$SERVER_BUILD/build.ninja" ]; then
         -Dllvm=disabled -Dlmsensors=disabled -Dvalgrind=disabled -Dlibunwind=disabled \
         -Dxmlconfig=disabled -Ddisplay-info=disabled -Dvideo-codecs= \
         -Dplatform-sdk-version=$API -Dandroid-stub=false \
+        -Dvulkan-loader-name=libvulkan_tawc.so \
         -Dbuildtype=release -Ddefault_library=shared
 fi
 ninja -C "$SERVER_BUILD"
@@ -226,23 +263,18 @@ cp -L "$PREFIX/usr/lib/libEGL.so" "$STAGE/libEGL.so"
 cp -L "$PREFIX/usr/lib/libGLESv2.so" "$STAGE/libGLESv2.so"
 cp -L "$PREFIX"/usr/lib/libgallium-*.so "$STAGE/"
 cp -L "$LIBDRM_PREFIX/usr/lib/libdrm.so" "$STAGE/libdrm.so"
+cp -L "$LOADER_BUILD/loader/libvulkan.so" "$STAGE/libvulkan_tawc.so"
 cp -L "$TURNIP_BUILD/src/freedreno/vulkan/libvulkan_freedreno.so" "$STAGE/libvulkan_freedreno.so"
 LIBCPP="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${TRIPLE}/libc++_shared.so"
 cp -L "$LIBCPP" "$STAGE/libc++_shared.so"
-
-# Minimal loader shim. Zink dlopens this by absolute path
-# (TAWC_VULKAN_LIB); it forwards to Turnip's vk_icdGetInstanceProcAddr.
-"$CC_BIN" -shared -fPIC -std=c11 -O2 \
-    -I"$MESA_DIR/include" \
-    -Wl,-soname,libvulkan_tawc.so \
-    "$REPO_DIR/compositor/native/vulkan_shim.c" \
-    -o "$STAGE/libvulkan_tawc.so" -ldl -llog
 
 # Every private lib finds its siblings through $ORIGIN, so the system
 # loader search path (and the system libEGL/libGLESv2) stays untouched.
 for so in "$STAGE"/*.so; do
     patchelf --set-rpath '$ORIGIN' "$so"
 done
+# Match the generic `vulkan-loader-name` passed to Mesa above.
+patchelf --set-soname libvulkan_tawc.so "$STAGE/libvulkan_tawc.so"
 
 # Zink's driver is linked directly into libgallium by this Mesa config;
 # no separate dri/ tree is needed.

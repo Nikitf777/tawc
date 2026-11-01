@@ -254,6 +254,8 @@ Delete `deps/.offline` if one ever ends up in a dev checkout.
 | `./deps/xwayland-src/<lib>/` (~22 repos)   | `scripts/build-xwayland.sh`               |
 | `./deps/smithay/`                     | Rust compositor (`scripts/ensure-deps.sh smithay`; consumed via `[patch.crates-io]` path in `compositor/Cargo.toml`) |
 | `./deps/mesa/`                             | Git submodule (`better-android-support`); `scripts/build-mesa-server.sh` (bionic server Mesa/Turnip) |
+| `./deps/vulkan-headers/`                   | `scripts/build-mesa-server.sh` (Khronos Vulkan loader headers) |
+| `./deps/vulkan-loader/`                    | `scripts/build-mesa-server.sh` (upstream Khronos Vulkan loader) |
 | `./deps/gfxstream/`                        | `scripts/build-gfxstream-backend.sh`      |
 | `./deps/rutabaga_gfx/`                     | `scripts/ensure-deps.sh --patches rutabaga_gfx deps/rutabaga-patches/rutabaga_gfx`; Rust compositor kumquat server dep |
 | `./deps/openssh-portable/`                 | `remote/sftp-server/build.sh` (remote access sftp-server) |
@@ -459,10 +461,12 @@ source even when distro sysroot packages lag.
 
 `scripts/build-mesa-server.sh` builds the compositor's own Mesa stack for
 Android bionic: surfaceless EGL/GLES with Zink, Turnip with the KGSL KMD,
-a minimal Vulkan loader shim, and libdrm. It uses the `deps/mesa` git
-submodule (fork branch `better-android-support`) and the
-`deps/xwayland-src/libdrm` checkout, the NDK clang (API 29), and the
-remaining `deps/mesa-patches/mesa/07-tawc-zink-vulkan-lib.patch`. Output is
+the upstream Khronos Vulkan loader, and libdrm. It uses the `deps/mesa`
+git submodule (fork branch `better-android-support`), the pinned
+`deps/vulkan-headers` + `deps/vulkan-loader` checkouts, and the
+`deps/xwayland-src/libdrm` checkout, the NDK clang (API 29). The
+`vulkan-loader-name` option is committed on the `better-android-support`
+branch (`f0623a27c03`). Output is
 `build/mesa-server-aarch64/mesa-server.tar`; Gradle's
 `buildMesaServerArm64-v8a` packs it under
 `assets/mesa-server/arm64-v8a/`, and `CompositorService` extracts it to

@@ -139,6 +139,43 @@ pub fn select_renderer(setting: RendererKind) -> RendererKind {
     *SELECTED.get_or_init(|| select_renderer_inner(setting))
 }
 
+/// Point Mesa's Zink at the app-private Khronos loader and Turnip ICD.
+/// Writes the ICD manifest and exports the environment the EGL/Zink stack
+/// reads at first use.
+pub fn prepare_mesa_environment(dir: &str) -> bool {
+    let egl = format!("{dir}/libEGL.so");
+    let gles = format!("{dir}/libGLESv2.so");
+    let loader = format!("{dir}/libvulkan_tawc.so");
+    let turnip = format!("{dir}/libvulkan_freedreno.so");
+    if !std::path::Path::new(&egl).is_file()
+        || !std::path::Path::new(&gles).is_file()
+        || !std::path::Path::new(&loader).is_file()
+        || !std::path::Path::new(&turnip).is_file()
+    {
+        return false;
+    }
+
+    // Export the private ICD through the Khronos loader's standard search
+    // override. Mesa is built with -Dvulkan-loader-name=libvulkan_tawc.so,
+    // so Zink opens this loader through libgallium's $ORIGIN runpath.
+    let icd_json = format!("{dir}/freedreno_icd.json");
+    let icd_manifest = format!(
+        "{{\n  \"file_format_version\": \"1.0.0\",\n  \"ICD\": {{\n    \"library_path\": \"{turnip}\",\n    \"api_version\": \"1.3.0\"\n  }}\n}}\n"
+    );
+    if let Err(e) = std::fs::write(&icd_json, icd_manifest) {
+        info!("server renderer: could not write {icd_json}: {e}");
+        return false;
+    }
+
+    std::env::set_var("TAWC_EGL_LIB", &egl);
+    std::env::set_var("TAWC_GLES_LIB", &gles);
+    std::env::set_var("VK_ICD_FILENAMES", &icd_json);
+    std::env::set_var("VK_DRIVER_FILES", &icd_json);
+    std::env::set_var("MESA_LOADER_DRIVER_OVERRIDE", "zink");
+    std::env::set_var("LIBGL_DRIVERS_PATH", dir);
+    true
+}
+
 fn select_renderer_inner(setting: RendererKind) -> RendererKind {
     let override_value = debug_server_renderer_property()
         .or_else(|| std::env::var("TAWC_SERVER_RENDERER").ok());
@@ -160,24 +197,6 @@ fn select_renderer_inner(setting: RendererKind) -> RendererKind {
     let dir = std::env::var("TAWC_MESA_SERVER_DIR").unwrap_or_else(|_| {
         format!("{}/mesa-server", crate::app_paths::get().files_dir)
     });
-    let egl = format!("{}/libEGL.so", dir);
-    let gles = format!("{}/libGLESv2.so", dir);
-    let vk_shim = format!("{}/libvulkan_tawc.so", dir);
-    let turnip = format!("{}/libvulkan_freedreno.so", dir);
-    for (what, path) in [
-        ("libEGL.so", &egl),
-        ("libGLESv2.so", &gles),
-        ("libvulkan_tawc.so", &vk_shim),
-        ("libvulkan_freedreno.so", &turnip),
-    ] {
-        if !std::path::Path::new(path).is_file() {
-            info!(
-                "server renderer: vendor (Mesa asset {} missing at {})",
-                what, path
-            );
-            return RendererKind::Vendor;
-        }
-    }
 
     // Adreno/KGSL gate. The compositor process can open this node on the
     // supported devices; no /dev/dri is required for the surfaceless path.
@@ -191,12 +210,11 @@ fn select_renderer_inner(setting: RendererKind) -> RendererKind {
         return RendererKind::Vendor;
     }
 
-    std::env::set_var("TAWC_EGL_LIB", &egl);
-    std::env::set_var("TAWC_GLES_LIB", &gles);
-    std::env::set_var("TAWC_VULKAN_LIB", &vk_shim);
-    std::env::set_var("TAWC_TURNIP_ICD", &turnip);
-    std::env::set_var("MESA_LOADER_DRIVER_OVERRIDE", "zink");
-    std::env::set_var("LIBGL_DRIVERS_PATH", &dir);
+    if !prepare_mesa_environment(&dir) {
+        info!("server renderer: vendor (Mesa asset incomplete under {dir})");
+        return RendererKind::Vendor;
+    }
+
     info!(
         "server renderer: Mesa GLES (surfaceless Zink/Turnip) from {}",
         dir

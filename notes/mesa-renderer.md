@@ -24,25 +24,24 @@ device test matrix is green.
 
 ## Stack
 
-- `libEGL.so` + `libGLESv2.so` + `libgallium-25.3.6.so`: Mesa built for
+- `libEGL.so` + `libGLESv2.so` + `libgallium-*.so`: Mesa built for
   Android bionic with `-Dplatforms= -Dgallium-drivers=zink`, no Android EGL
   platform. EGL is opened through Smithay's patched loader
   (`TAWC_EGL_LIB` points at the private `libEGL.so`).
-- `libvulkan_tawc.so`: minimal loader shim. It forwards
-  `vkGetInstanceProcAddr`/`vkGetDeviceProcAddr` to Turnip's
-  `vk_icdGetInstanceProcAddr`; Zink opens it via `TAWC_VULKAN_LIB`.
+- `libvulkan_tawc.so`: upstream Khronos Vulkan loader, renamed to avoid
+  Android's preloaded `libvulkan.so`. Zink opens it through the generic
+  Mesa `vulkan-loader-name` build option; `VK_ICD_FILENAMES` points it at
+  our private Turnip ICD.
 - `libvulkan_freedreno.so`: Turnip built with the KGSL KMD and Khronos ICD
-  symbols (`-Dtawc-vulkan-icd=true`). AHB support is intentionally absent;
-  Turnip only needs `VK_EXT_external_memory_dma_buf`.
+  symbols. AHB support is intentionally absent; Turnip only needs
+  `VK_EXT_external_memory_dma_buf`.
 - `libdrm.so`: built for Android bionic so Mesa compiles `HAVE_LIBDRM` and
   advertises `EGL_EXT_image_dma_buf_import`.
 - Smithay patch: `deps/smithay-patches/smithay/01-tawc-egl-lib-path.patch`
   makes `egl_ffi` honour `TAWC_EGL_LIB` instead of hard-coding `libEGL.so`.
-- Mesa patches: `07-tawc-zink-vulkan-lib.patch` (Zink `TAWC_VULKAN_LIB`),
-  `08-tawc-surfaceless-zink.patch` (hardware Zink with no DRM),
-  `09-tawc-vulkan-icd-symbols.patch` (Khronos ICD symbols),
-  `10-tawc-kgsl-sync-wait.patch` (NDK 27 `sync_wait`),
-  `11-tawc-turnip-no-ahb.patch` (no Android gralloc in the private ICD).
+- Mesa commit `f0623a27c03` on `better-android-support` adds a generic
+  Meson option that lets Zink use a loader filename other than the platform
+  default. The upstream Khronos loader and Turnip need no other Mesa changes.
 
 Build: `scripts/build-mesa-server.sh` → `build/mesa-server-aarch64/mesa-server.tar`.
 Gradle's `buildMesaServerArm64-v8a` packs it as
@@ -66,7 +65,7 @@ AHB dma-buf metadata is not available, the target falls back to the older CPU
 `libsync` fd duplication, QCOM `gmsm` UBWC flag when present, and
 `EGL_EXT_image_dma_buf_import`. `zwp_linux_dmabuf_v1` v3 is advertised only
 when the Mesa renderer initialised and reports a non-empty import format set
-(87 format/modifier pairs on the test Adreno device). Vendor mode keeps the
+(89 format/modifier pairs on the test Adreno device). Vendor mode keeps the
 old globals and does not load any Mesa libs.
 
 ## Performance (2026-10-26)

@@ -11,9 +11,6 @@ import android.view.PointerIcon
 import android.view.Surface
 import android.view.inputmethod.EditorInfo
 import androidx.core.net.toUri
-import me.phie.tawc.launcher.LaunchEvent
-import me.phie.tawc.launcher.LaunchRegistry
-import me.phie.tawc.terminal.TerminalPane
 import java.lang.ref.WeakReference
 
 object NativeBridge {
@@ -169,33 +166,6 @@ object NativeBridge {
     /** Debug builds (`compositor-hold`): keep a clientless compositor up. */
     external fun nativeSetCompositorHold(hold: Boolean)
 
-    /** Reconcile the per-distro ando broker listeners to exactly the
-     *  enabled set (run Android commands from rootfs guests — see
-     *  notes/ando.md). `ids[i]` is an install id and `paths[i]` its
-     *  host-side socket path; the arrays are parallel. Driven by
-     *  [me.phie.tawc.AndoBrokers.refresh] at startup and on every ando
-     *  install/uninstall/toggle. Idempotent. */
-    external fun nativeSyncAndoBrokers(ids: Array<String>, paths: Array<String>)
-
-    // --- Launch splash (me.phie.tawc.launcher.LaunchRegistry) ---
-
-    /** Reserve the splash Activity [launchId] as the host for the launch's
-     *  first window. Returns the activation token to hand the program, or
-     *  null if no compositor answered. Blocks until the event loop has it. */
-    external fun nativeReserveLaunchHost(
-        launchId: String,
-        desktopId: String,
-        /** The entry's [me.phie.tawc.PointerEmulation.ordinal] override,
-         *  or -1 for the global setting. */
-        pointerEmulation: Int,
-    ): String?
-
-    /** The launched program's session id (0: unknown), or that it exited. */
-    external fun nativeUpdateLaunch(launchId: String, sid: Int, exited: Boolean)
-
-    /** Drop the reservation: the splash is gone. */
-    external fun nativeReleaseLaunchHost(launchId: String)
-
     // --- Per-Activity surface lifecycle: called from CompositorActivity ---
 
     /** Register an Activity's `SurfaceView.Surface` with the compositor.
@@ -330,9 +300,6 @@ object NativeBridge {
     /** Display refresh rate (mHz) for `wl_output.mode`. */
     external fun nativeSetOutputRefreshRate(mhz: Int)
 
-    /** Start/stop the compositor-owned Xwayland server live. */
-    external fun nativeSetXwaylandEnabled(enabled: Boolean)
-
     /** Global pointer emulation: [me.phie.tawc.PointerEmulation.ordinal]. */
     external fun nativeSetPointerEmulation(mode: Int)
 
@@ -348,45 +315,6 @@ object NativeBridge {
 
     /** Structured debug counters for clipboard integration tests. */
     external fun nativeClipboardDebugState(): String?
-
-    /**
-     * Scan a rootfs for installed `.desktop` apps, merged with the
-     * install's `launcher/entries.json` (overrides + shortcuts). Returns
-     * a JSON array string ([me.phie.tawc.launcher.LauncherEntry.parseList]
-     * has the shape; sorted by name, de-duplicated by id,
-     * NoDisplay/Hidden filtered out). Empty `[]` if
-     * the rootfs has no apps or doesn't exist. The work is pure file I/O
-     * with no compositor-state interaction, so this is safe to call from
-     * any thread (AppsPane dispatches it on Dispatchers.IO).
-     */
-    external fun nativeLauncherScan(rootfs: String): String
-
-    /** Resolve one `Icon=` value (name or in-rootfs absolute path) the
-     *  way the launcher scan does: a decodable PNG path, or empty. File
-     *  I/O and maybe an SVG render; call on Dispatchers.IO. */
-    external fun nativeResolveIcon(rootfs: String, value: String): String
-
-    /** Every icon name in the rootfs, as a JSON array of
-     *  `{name, user}` sorted by name; `user` = has a copy under
-     *  `/root/.local/share/icons`. Call on Dispatchers.IO. */
-    external fun nativeListIcons(rootfs: String): String
-
-    /** Rasterize the SVG at [src] to a [px]² PNG at [dst] (resvg, the
-     *  icon cache's renderer). False on any failure. Call on
-     *  Dispatchers.IO. */
-    external fun nativeRasterizeIcon(src: String, dst: String, px: Int): Boolean
-
-    // --- Remote access (me.phie.tawc.remote.RemoteSession; notes/remote-access.md) ---
-
-    /** Start the agent from a JSON request; null when started, else why
-     *  not (one already runs, bad relay URL, …). */
-    external fun nativeRemoteStart(request: String): String?
-
-    /** Stop and join the agent, hanging up every login. Idempotent. */
-    external fun nativeRemoteStop()
-
-    /** Agent status JSON; `{"state":"stopped"}` if nothing ever ran. */
-    external fun nativeRemoteStatus(): String
 
     // --- Reverse JNI: Compositor → Android (called from compositor thread) ---
 
@@ -441,18 +369,6 @@ object NativeBridge {
             }
             ctx.startActivity(intent)
         }
-    }
-
-    /** Called from native: a window was assigned to the launch's splash host. */
-    @JvmStatic
-    fun onLaunchMatched(launchId: String) {
-        LaunchRegistry.dispatch(launchId, LaunchEvent.Matched)
-    }
-
-    /** Called from native: the launch's window rendered; the splash can go. */
-    @JvmStatic
-    fun onLaunchShown(launchId: String) {
-        LaunchRegistry.dispatch(launchId, LaunchEvent.Shown)
     }
 
     /** Called from native (xdg-activation): bring an existing window's task
@@ -632,14 +548,6 @@ object NativeBridge {
         CompositorService.ensureRunning(ctx)
     }
 
-    /** Called from the remote agent's thread for each event. Must not
-     *  call the remote natives synchronously ([nativeRemoteStop] joins
-     *  that thread). */
-    @JvmStatic
-    fun onRemoteEvent(json: String) {
-        me.phie.tawc.remote.RemoteSession.onNativeEvent(json)
-    }
-
     /** Called from the compositor thread as its very last act. */
     @JvmStatic
     fun onCompositorStopped() {
@@ -711,12 +619,6 @@ object NativeBridge {
             ClipboardBridge.setTextFromCompositor(text)
         }
     }
-
-    /** Called from native, on the event loop, to gate data-control
-     *  clipboard reads (`wl-paste`): the `tty_nr` of the terminal tab the
-     *  user is looking at, 0 for none. */
-    @JvmStatic
-    fun focusedTerminalTty(): Int = TerminalPane.focusedTty()
 
     /** Called from a native clipboard-fetch thread when a client pastes the
      *  compositor-owned Android selection. Runs the real clipboard read —

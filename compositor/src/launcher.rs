@@ -410,49 +410,10 @@ pub struct DesktopAppMetadata {
     pub icon_path: String,
 }
 
-/// Resolve a Wayland app_id / XWayland WM_CLASS against every installed
-/// rootfs. Returns the first launchable desktop entry whose id is a
-/// plausible match, with its icon resolved to a PNG path.
-///
-/// Matching happens first, resolution second: this runs on the
-/// compositor thread (via `Compositor::resolve_cached_app_metadata`) on
-/// first window map, so it resolves exactly the one winning icon rather
-/// than every icon in every installed rootfs.
-pub fn resolve_metadata_for_app_id(app_id: &str) -> Option<DesktopAppMetadata> {
-    let query = app_id.trim();
-    if query.is_empty() {
-        return None;
-    }
-    for rootfs in installed_rootfs_dirs() {
-        for entry in scan_entries(&rootfs, false) {
-            if desktop_id_matches_app_id(&entry.id, query) {
-                let icon_path = IconResolver::new(&rootfs).entry_icon(&entry);
-                return Some(DesktopAppMetadata {
-                    desktop_id: entry.id,
-                    name: entry.name,
-                    icon_path,
-                });
-            }
-        }
-    }
+/// External-only builds have no rootfs to resolve desktop entries from.
+/// Window metadata falls back to the client-provided app_id.
+pub fn resolve_metadata_for_app_id(_app_id: &str) -> Option<DesktopAppMetadata> {
     None
-}
-
-
-fn installed_rootfs_dirs() -> Vec<PathBuf> {
-    let distros = Path::new(&crate::app_paths::get().distros_dir);
-    let mut out = Vec::new();
-    let Ok(read_dir) = std::fs::read_dir(distros) else {
-        return out;
-    };
-    for entry in read_dir.flatten() {
-        let rootfs = entry.path().join("rootfs");
-        if rootfs.is_dir() {
-            out.push(rootfs);
-        }
-    }
-    out.sort();
-    out
 }
 
 pub(crate) fn desktop_id_matches_app_id(desktop_id: &str, app_id: &str) -> bool {

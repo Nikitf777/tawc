@@ -57,7 +57,7 @@
     <string name="server_renderer_mesa_detail">Adreno only. Adds zwp_linux_dmabuf_v1 for dma-buf clients.</string>
     <string name="server_renderer_restart">Changes take effect after restarting the app.</string>
     <string name="server_renderer_restart_title">Restart compositor?</string>
-    <string name="server_renderer_restart_message">%1$s takes effect after the app restarts. Restarting closes running terminal sessions. Choose Later to keep them and apply the change from the home menu.</string>
+    <string name="server_renderer_restart_message">%1$s takes effect after the app restarts. Restarting disconnects external clients. Choose Later to keep them running and apply the change with the Restart compositor button.</string>
     <string name="server_renderer_restart_now">Restart now</string>
     <string name="server_renderer_restart_later">Later</string>
     <string name="graphics_backend_libhybris_detail">Best performance, some apps may not work</string>
@@ -65,6 +65,7 @@
     <string name="graphics_backend_gfxstream_detail">(currently unsupported)</string>
     <string name="graphics_backend_cpu_detail">Slower, better compatibility</string>
     <string name="settings_compatibility">Compatibility</string>
+    <string name="settings_diagnostics">Diagnostics</string>
     <string name="settings_tint_buffers_by_type">Tint buffers based on type</string>
     <string name="settings_xwayland">Xwayland</string>
     <string name="settings_pointer_emulation">Pointer emulation</string>
@@ -81,8 +82,6 @@
     <string name="settings_about_licenses">Licenses</string>
 
     <string name="settings_external_apps">External apps</string>
-    <string name="external_access_disabled">Disabled</string>
-    <string name="external_access_disabled_detail">No other app can open windows in TAWC</string>
     <string name="external_access_allowlist">Allowed apps only</string>
     <string name="external_access_allowlist_detail">Only apps you pick below can connect</string>
     <string name="external_access_any">Any app</string>
@@ -389,9 +388,9 @@
     <string name="task_manager_unknown">unknown</string>
     <string name="task_manager_unknown_rootfs">unknown rootfs</string>
     <string name="task_manager_uninstalled_rootfs">uninstalled rootfs %1$s</string>
-    <string name="session_channel_name">Linux session</string>
-    <string name="session_channel_description">Shown while terminals, programs or windows are running in a Linux install.</string>
-    <string name="session_notification_title">TAWC running</string>
+    <string name="session_channel_name">Compositor</string>
+    <string name="session_channel_description">Shown while the Wayland compositor is running.</string>
+    <string name="session_notification_title">TAWC compositor</string>
     <string name="session_notification_exit">Exit</string>
     <string name="session_running_command">Running: %1$s</string>
     <string name="session_display_server">Display server running</string>

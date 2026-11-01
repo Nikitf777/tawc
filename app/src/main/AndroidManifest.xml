@@ -3,31 +3,12 @@
 
     <uses-feature android:glEsVersion="0x00020000" android:required="true" />
 
-    <!-- Bootstrap tarballs are downloaded directly by the install package. -->
-    <!-- Remote access local-network mode: tells cellular interfaces
-         apart so it never listens on one (remote/LocalNetwork.kt). -->
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.INTERNET" />
-    <!-- SessionService keeps the process in the foreground while anything
-         is alive in a rootfs (terminals, commands, the compositor);
-         specialUse is the correct foregroundServiceType on Android 14+
-         (none of the standard types fit). InstallationService runs the
-         long-running install/uninstall flow as dataSync. -->
+    <!-- SessionService keeps the process in the foreground while the
+         compositor runs; specialUse is the correct foregroundServiceType
+         on Android 14+ (none of the standard types fit). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- SessionService's opt-in "Keep awake" (CPU + Wi-Fi locks). -->
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-
-    <!-- All-files access backs the external-storage bind feature
-         (notes/external-binds.md): the user binds e.g.
-         /storage/emulated/0 into a rootfs as /home/android so Linux
-         apps see shared storage directly. Google Play treats this as a
-         sensitive permission; `-PtawcAllFilesAccess=false` strips it at
-         build time (see app/build.gradle.kts) and the app then hides
-         the binds UI (AllFilesAccess.declared). -->
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <!-- ExternalWaylandService identifies its caller by uid and package
          name (see callerAllowed). Package visibility filtering otherwise
@@ -36,24 +17,14 @@
         <package android:name="com.termux" />
         <!-- Debug-only fallback so the helper can run from `adb shell`. -->
         <package android:name="com.android.shell" />
-        <!-- External apps allowlist picker lists launchable apps without
-             QUERY_ALL_PACKAGES. -->
+        <!-- The external apps allowlist dialog lists launchable apps
+             without QUERY_ALL_PACKAGES. -->
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
     </queries>
 
-    <!--
-      extractNativeLibs="true": the rootless install method ships proot
-      as jniLibs/<abi>/libproot.so and exec's it from nativeLibraryDir.
-      execve needs a real on-disk inode, which only happens when the OS
-      extracts native libs out of the APK. Without this attribute, AGP
-      defaults to page-aligned-in-APK loading (good for dlopen, useless
-      for exec). Same applies to libcompositor.so today (it's dlopen'd
-      via System.loadLibrary so it'd work either way), but we don't want
-      the default to ever shadow the proot binary's executability.
-    -->
     <application
         android:name=".TawcApplication"
         android:allowBackup="false"
@@ -65,11 +36,10 @@
         android:theme="@style/Theme.Tawc"
         android:extractNativeLibs="true">
 
-        <!-- Home screen and in-app terminal (notes/android.md "Home
-             screen"). singleTask: launcher entries' command tabs and
-             the session notification reach the one instance via
-             onNewIntent. configChanges keeps rotation from rebuilding
-             the terminal; adjustResize lets the IME shrink the panes. -->
+        <!-- Transparent trampoline in a separate process, used by
+             AppRestart to relaunch MainActivity after the app process is
+             killed (Android 14 blocks an alarm/broadcast from bringing a
+             singleTask activity back directly). -->
         <activity
             android:name=".RestartActivity"
             android:exported="false"
@@ -91,24 +61,12 @@
             </intent-filter>
         </activity>
 
-        <!-- The only way in for command launches (EntryLauncher):
-             MainActivity is exported, so it honors EXTRA_COMMAND only
-             when the intent names this non-exported alias. -->
-        <activity-alias
-            android:name=".CommandLaunch"
-            android:exported="false"
-            android:targetActivity=".MainActivity" />
-
-        <!-- CompositorActivity hosts one window. The combination of
-             documentLaunchMode="intoExisting", taskAffinity="" and a
-             unique tawc://activity/<id> URI per launch makes Android
-             treat each activityId as its own "document," giving each
-             window a separate card in recents. Launch paths are the
-             reverse-JNI spawnActivity callback in NativeBridge.kt and a
-             launcher tap's splash (CompositorActivity.launchIntent), both
-             explicit Intents with the URI as data — no intent-filter or
-             exported needed.
-             See notes/multi-activity.md. -->
+        <!-- CompositorActivity hosts one window. documentLaunchMode
+             "intoExisting", taskAffinity="" and a unique
+             tawc://activity/<id> URI per launch makes Android treat each
+             activityId as its own "document", giving each window a
+             separate card in recents. The launch path is the reverse-JNI
+             spawnActivity callback in NativeBridge.kt. -->
         <activity
             android:name=".compositor.CompositorActivity"
             android:exported="false"
@@ -129,68 +87,6 @@
             android:name=".compositor.ExternalWaylandService"
             android:exported="true" />
 
-        <service
-            android:name=".session.SessionService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="linux_session" />
-        </service>
-
-        <activity
-            android:name=".install.InstallActivity"
-            android:exported="false"
-            android:label="@string/title_install_distro" />
-
-        <activity
-            android:name=".install.ImportActivity"
-            android:exported="false"
-            android:label="@string/title_import_distro"
-            android:windowSoftInputMode="adjustResize" />
-
-        <!-- UI-less: just the SAF save picker for an export. -->
-        <activity
-            android:name=".install.ExportActivity"
-            android:exported="false"
-            android:theme="@style/Theme.Tawc.DialogHost"
-            android:excludeFromRecents="true" />
-
-        <activity
-            android:name=".install.DistroInfoActivity"
-            android:exported="false"
-            android:label="@string/title_distro_info" />
-
-        <activity
-            android:name=".remote.RemoteAccessActivity"
-            android:exported="false"
-            android:label="@string/title_remote_access" />
-
-        <activity
-            android:name=".install.InstallMethodInfoActivity"
-            android:exported="false"
-            android:label="@string/title_install_methods" />
-
-        <activity
-            android:name=".install.ManageBindsActivity"
-            android:exported="false"
-            android:label="@string/title_manage_binds" />
-
-        <activity
-            android:name=".install.DirectoryPickerActivity"
-            android:exported="false"
-            android:label="@string/title_directory_picker" />
-
-        <activity
-            android:name=".tasks.TaskManagerActivity"
-            android:exported="false"
-            android:label="@string/title_task_manager" />
-
-        <activity
-            android:name=".SettingsActivity"
-            android:exported="false"
-            android:label="@string/title_settings" />
-
         <activity
             android:name=".licenses.LicensesActivity"
             android:exported="false"
@@ -201,77 +97,14 @@
             android:exported="false"
             android:label="@string/title_licenses" />
 
-        <!-- Generic per-operation log viewer. Pure viewer: opening it
-             never triggers any operation. Exported in debug builds
-             only (placeholder set per build type in build.gradle.kts)
-             so an am start with operationId from adb can attach to a
-             running op (e.g. one started via the dev exec broker);
-             release builds keep it app-internal. -->
-        <activity
-            android:name=".ops.LogScreenActivity"
-            android:exported="${logScreenExported}"
-            android:label="@string/title_operation_log" />
-
-        <!-- Notification "Cancel" action target. Looks up the named op
-             in OperationsRegistry and calls Operation.cancel(). Bypasses
-             cancelConfirmation — a notification-action tap is itself the
-             deliberate decision. PendingIntents target this receiver via
-             explicit ComponentName, so no intent-filter is needed. -->
-        <receiver
-            android:name=".ops.CancelOperationReceiver"
-            android:exported="false" />
-
-        <!-- Launch-failure dialog. Started from the application context
-             by EntryLauncher's fire-and-forget failure handler. -->
-        <activity
-            android:name=".launcher.LaunchErrorActivity"
-            android:exported="false"
-            android:theme="@style/Theme.Tawc.DialogHost"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:excludeFromRecents="true" />
-
-        <!-- Launcher entry editor (overrides + shortcuts in the
-             launcher store). Launched for result by the home screen's
-             apps pane; RESULT_OK triggers a rescan. -->
-        <activity
-            android:name=".launcher.EntryEditorActivity"
-            android:exported="false"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:windowSoftInputMode="adjustResize" />
-
-        <!-- Icon picker behind the editor's Select button; returns the
-             chosen icon name. -->
-        <activity
-            android:name=".launcher.IconPickerActivity"
-            android:exported="false"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:windowSoftInputMode="adjustResize" />
-
-        <activity
-            android:name=".ExternalAppsActivity"
-            android:exported="false"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:windowSoftInputMode="adjustResize" />
-
-        <!-- Trampoline behind pinned home-screen shortcuts
-             (EntryShortcuts). Pinned-shortcut intents may target
-             non-exported components of the publishing app, so no new
-             attack surface. taskAffinity="" + noHistory +
-             excludeFromRecents: a shortcut tap resolves and launches
-             without yanking the main TAWC task forward or leaving a
-             card in recents. -->
-        <activity
-            android:name=".launcher.ShortcutLaunchActivity"
-            android:exported="false"
-            android:theme="@style/Theme.Tawc.DialogHost"
-            android:noHistory="true"
-            android:excludeFromRecents="true"
-            android:taskAffinity="" />
-
         <service
-            android:name=".install.InstallationService"
+            android:name=".session.SessionService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="wayland_compositor" />
+        </service>
 
     </application>
 

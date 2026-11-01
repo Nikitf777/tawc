@@ -1,5 +1,10 @@
 # Notes Index
 
+> **This branch is the external-Wayland-only fork.** See
+> [external-only.md](external-only.md) for what was removed. Distro,
+> rootfs, launcher and terminal notes below describe upstream TAWC history
+> and are not part of this app.
+
 Start here when looking for durable project context. `AGENTS.md` keeps only always-needed operating rules; detailed design/build/test information belongs in these notes. Future-work plans live in [`../plans/`](../plans/).
 
 ## Build, Install, Test

@@ -24,8 +24,6 @@ fun Context.externalAccessGroup(
     val group = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
     for (mode in ExternalAccessMode.entries) {
         val (name, detail) = when (mode) {
-            ExternalAccessMode.DISABLED ->
-                R.string.external_access_disabled to R.string.external_access_disabled_detail
             ExternalAccessMode.ALLOWLIST ->
                 R.string.external_access_allowlist to R.string.external_access_allowlist_detail
             ExternalAccessMode.ANY ->

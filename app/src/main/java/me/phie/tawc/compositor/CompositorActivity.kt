@@ -10,7 +10,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.hardware.display.DisplayManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -46,10 +45,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.phie.tawc.RefreshRate
 import me.phie.tawc.Settings
-import me.phie.tawc.launcher.EntryLauncher
-import me.phie.tawc.launcher.Launch
-import me.phie.tawc.launcher.LaunchRegistry
-import me.phie.tawc.launcher.LaunchState
 import java.io.File
 
 /**
@@ -60,10 +55,8 @@ import java.io.File
  * The Activity binds to [CompositorService] (which owns the compositor
  * thread + Wayland socket) and forwards its `SurfaceView` lifecycle and
  * input events to native, tagged with its `activityId`. The id comes
- * from `intent.data?.lastPathSegment` of a `tawc://activity/<id>` URI.
- * Two paths launch it: the `spawnActivity` reverse-JNI call from the
- * compositor's policy, and [launchIntent] for a launcher tap, which shows
- * a [LaunchSplash] until the program's window maps into this host.
+ * from `intent.data?.lastPathSegment` of a `tawc://activity/<id>` URI,
+ * created by the `spawnActivity` reverse-JNI call.
  */
 class CompositorActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var rootView: FrameLayout
@@ -83,9 +76,6 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
     }
     /** Set in onCreate from intent.data (a `tawc://activity/<id>` URI). */
     private lateinit var activityId: String
-    /** Set when this task was opened by a launcher tap ([launchIntent]). */
-    private var launchId: String? = null
-    private var launchSplash: LaunchSplash? = null
     /** False until onCreate finished its full setup — guards onDestroy
      *  cleanup against the early-return path when intent.data is missing. */
     private var initialized = false
@@ -111,10 +101,10 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Both legitimate launch paths (spawnActivity, launchIntent) set a
-        // `tawc://activity/<id>` data URI. Anything else (system relaunches an old Intent without data,
-        // a stray `am start` from the user) is an orphaned task; finish
-        // immediately so the recents card disappears.
+        // spawnActivity sets a `tawc://activity/<id>` data URI. Anything
+        // else (system relaunches an old Intent without data, a stray
+        // `am start` from the user) is an orphaned task; finish immediately
+        // so the recents card disappears.
         val id = intent?.data?.lastPathSegment
         if (id.isNullOrEmpty()) {
             Log.w(TAG, "CompositorActivity launched without tawc:// activityId — finishing")
@@ -122,14 +112,6 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
             return
         }
         activityId = id
-        launchId = intent.getStringExtra(EXTRA_LAUNCH_ID)
-        val launch = launchId?.let { LaunchRegistry.get(it) }
-        if (launchId != null && launch == null) {
-            // A launch splash restored after the process died, or already
-            // closed: nothing will ever map into it.
-            finishAndRemoveTask()
-            return
-        }
         if (NativeBridge.consumePendingFinishActivity(activityId)) {
             finishAndRemoveTask()
             return
@@ -167,43 +149,11 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
             .registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
 
         initialized = true
-        if (launch != null) showLaunchSplash(launch)
     }
 
-    private fun showLaunchSplash(launch: Launch) {
-        launch.attached = true
-        launch.taskId = taskId
-        applyTaskDescription(launch.name, launch.iconPath)
-        val splash = LaunchSplash(this, rootView, launch, close = { finishAndRemoveTask() }) { graphics ->
-            EntryLauncher.relaunch(applicationContext, launch, graphics)
-            finishAndRemoveTask()
-        }
-        rootView.addView(splash.view, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT,
-        ))
-        splash.bind(metadataScope)
-        launchSplash = splash
-    }
-
-    /** The compositor finished this host, or stopped. A launch splash
-     *  may keep the task to show why the window went ([LaunchRegistry.windowClosed]);
-     *  it needs no compositor for that. */
+    /** The compositor finished this host, or stopped. */
     fun finishFromCompositor() {
-        val id = launchId
-        if (launchSplash != null && id != null) {
-            if (LaunchRegistry.windowClosed(id)) return
-            val state = LaunchRegistry.get(id)?.state?.value
-            if (state == LaunchState.Closing || state is LaunchState.Exited) return
-        }
         finishAndRemoveTask()
-    }
-
-    /** Back while the splash or its log is up closes the task. */
-    private fun backClosesSplash(): Boolean {
-        if (launchSplash?.active != true) return false
-        finishAndRemoveTask()
-        return true
     }
 
     override fun onDestroy() {
@@ -216,8 +166,6 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
                 NativeBridge.activeInputConnection = null
             }
             NativeBridge.clearActivityImeState(activityId)
-            // Drops only the reservation; the program keeps running.
-            launchId?.let { if (!isChangingConfigurations) LaunchRegistry.release(it) }
             NativeBridge.nativeOnActivityDestroyed(activityId)
             compositorService?.unregisterActivity(activityId)
             compositorService?.removeWindow(activityId)
@@ -234,7 +182,6 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
     @Deprecated("Deprecated in Android; kept for pre-OnBackInvoked dispatch.")
     override fun onBackPressed() {
         if (initialized) {
-            if (backClosesSplash()) return
             NativeBridge.nativeOnBackPressed(activityId)
         } else {
             super.onBackPressed()
@@ -486,7 +433,7 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
 
     private fun registerBackCallbackApi33() {
         val callback = OnBackInvokedCallback {
-            if (initialized && !backClosesSplash()) NativeBridge.nativeOnBackPressed(activityId)
+            if (initialized) NativeBridge.nativeOnBackPressed(activityId)
         }
         backCallback = callback
         onBackInvokedDispatcher.registerOnBackInvokedCallback(
@@ -1024,20 +971,6 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
     companion object {
         private const val TAG = "tawc"
         private const val TASK_ICON_SIZE_DP = 96
-        private const val EXTRA_LAUNCH_ID = "launchId"
-
-        /** A new task for a launcher tap: the splash, then the program's
-         *  first window in the same task ([LaunchRegistry]). */
-        fun launchIntent(context: Context, launchId: String): Intent =
-            Intent(context, CompositorActivity::class.java).apply {
-                action = Intent.ACTION_VIEW
-                data = Uri.parse("tawc://activity/$launchId")
-                putExtra(EXTRA_LAUNCH_ID, launchId)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_NEW_DOCUMENT or
-                    Intent.FLAG_ACTIVITY_MULTIPLE_TASK
-            }
-
         // NativeBridge.nativeOnPointerEvent `kind` values.
         private const val POINTER_KIND_MOTION = 0
         private const val POINTER_KIND_BUTTON = 1

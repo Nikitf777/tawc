@@ -150,28 +150,11 @@ pub fn selection_exists(state: &TawcState) -> bool {
 }
 
 /// Gate for data-control reads (`wl-paste`), whoever owns the selection.
-/// Data-control needs no focus, so the offer-serial gate can't apply;
-/// instead only processes on the pty of the terminal tab the user is
-/// looking at may read. Core-protocol reads keep the serial gate.
-pub fn allow_data_control_read(state: &TawcState, client: &Client) -> bool {
-    let tty = client
-        .get_credentials(&state.display_handle)
-        .ok()
-        .and_then(|creds| process_tty(creds.pid))
-        .unwrap_or(0);
-    let allowed = tty != 0 && tty == crate::focused_terminal_tty();
-    if !allowed {
-        info!("clipboard: denied data-control read (tty {})", tty);
-    }
-    allowed
-}
-
-/// Controlling tty (`tty_nr`) of `pid`, 0 for none.
-fn process_tty(pid: i32) -> Option<i32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // comm may hold spaces and parens; tty_nr is the 5th field after it.
-    let rest = &stat[stat.rfind(')')? + 1..];
-    rest.split_whitespace().nth(4)?.parse().ok()
+/// Data-control needs no focus, so the offer-serial gate can't apply.
+/// External clients are already gated by the app's external-access policy,
+/// so once a client is connected it may read the selection.
+pub fn allow_data_control_read(_state: &TawcState, _client: &Client) -> bool {
+    true
 }
 
 /// Install the Android selection under a fresh serial, which invalidates

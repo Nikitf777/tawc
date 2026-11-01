@@ -6,7 +6,7 @@ use std::sync::{OnceLock, mpsc};
 use std::time::Duration;
 
 use jni::JNIEnv;
-use jni::objects::{GlobalRef, JClass, JObject, JObjectArray, JString, JValue};
+use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::sys::{jboolean, jint, jlong, jobject};
 use jni::JavaVM;
 use log::info;
@@ -16,7 +16,6 @@ use wayland_server::Display;
 #[cfg(feature = "gfxstream")]
 mod ahb_export;
 mod activation;
-mod ando;
 mod app_paths;
 #[cfg(feature = "gfxstream")]
 mod bridge;
@@ -27,7 +26,6 @@ mod gl_import;
 mod host;
 mod pointer_emulation;
 mod protocol;
-mod remote_jni;
 mod wlegl;
 mod clipboard;
 mod compositor;
@@ -197,14 +195,10 @@ fn init_native_logging() {
     // thread vanishes silently and is misdiagnosed as a hang. Route
     // panics through `error!` (i.e. android_logger / logcat).
     //
-    // Then: abort, with one exception. The compositor is the only
-    // thing this process is for, so a panic there is fatal and we'd
-    // rather show up as a clean SIGABRT with a useful message than
-    // leave the JVM running on a dead native worker. The ando broker
-    // threads (`ando-*`) instead unwind into their per-connection
-    // `catch_unwind` — a malformed request must not take down the app.
-    // Remote access (`tawc-remote*`) likewise: tokio contains a panic to
-    // its task, and the agent thread catches the rest.
+    // Then: abort. The compositor is the only thing this process is
+    // for, so a panic there is fatal and we'd rather show up as a clean
+    // SIGABRT with a useful message than leave the JVM running on a dead
+    // native worker.
     static PANIC_HOOK: OnceLock<()> = OnceLock::new();
     PANIC_HOOK.get_or_init(|| {
         std::panic::set_hook(Box::new(|info| {
@@ -218,9 +212,7 @@ fn init_native_logging() {
             let thread = std::thread::current();
             let name = thread.name().unwrap_or("<unnamed>");
             log::error!("panic in thread {} at {}: {}", name, location, msg);
-            if !name.starts_with("ando-") && !name.starts_with("tawc-remote") {
-                std::process::abort();
-            }
+            std::process::abort();
         }));
     });
 }
@@ -498,53 +490,6 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeIsComposi
     _class: JClass,
 ) -> jboolean {
     (*LIFECYCLE.phase.lock().unwrap() == Phase::Running) as jboolean
-}
-
-/// Reconcile the per-distro ando broker listeners to exactly the
-/// enabled set (see ando.rs / notes/ando.md). `ids[i]` is an install id
-/// and `paths[i]` its host-side socket path
-/// (`<appData>/distros/<id>/ando/ando.sock`); the two arrays are
-/// parallel. Called from `AndoBrokers.refresh` at startup and on every
-/// ando install/uninstall/toggle. Idempotent.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeSyncAndoBrokers(
-    mut env: JNIEnv,
-    _class: JClass,
-    ids: JObjectArray,
-    paths: JObjectArray,
-) {
-    init_native_logging();
-    let ids = match jstring_array(&mut env, &ids) {
-        Ok(v) => v,
-        Err(e) => {
-            log::error!("nativeSyncAndoBrokers: bad ids array: {}", e);
-            return;
-        }
-    };
-    let paths = match jstring_array(&mut env, &paths) {
-        Ok(v) => v,
-        Err(e) => {
-            log::error!("nativeSyncAndoBrokers: bad paths array: {}", e);
-            return;
-        }
-    };
-    if ids.len() != paths.len() {
-        log::error!("nativeSyncAndoBrokers: length mismatch {} != {}", ids.len(), paths.len());
-        return;
-    }
-    ando::sync(ids, paths);
-}
-
-/// Read a Java `String[]` into a `Vec<String>`.
-fn jstring_array(env: &mut JNIEnv, arr: &JObjectArray) -> Result<Vec<String>, jni::errors::Error> {
-    let len = env.get_array_length(arr)?;
-    let mut out = Vec::with_capacity(len as usize);
-    for i in 0..len {
-        let obj = env.get_object_array_element(arr, i)?;
-        let s: String = env.get_string(&JString::from(obj))?.into();
-        out.push(s);
-    }
-    Ok(out)
 }
 
 /// Stop the compositor thread and wait until it is fully gone. The thread
@@ -1101,115 +1046,6 @@ pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeClipboard
 }
 
 // ---------------------------------------------------------------------------
-// JNI: Launcher (LauncherActivity)
-// ---------------------------------------------------------------------------
-
-/// Scan a rootfs for installed `.desktop` apps and return the result as a
-/// JSON-encoded string. The launcher activity parses this on the Kotlin
-/// side; keeping the wire format string-shaped means we don't have to
-/// declare or look up Java classes from Rust.
-///
-/// JSON shape: array of `{id, name, comment, exec, terminal}`. Empty
-/// array on any error / missing rootfs (the caller treats that as "no
-/// apps").
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeLauncherScan(
-    mut env: JNIEnv,
-    _class: JClass,
-    rootfs: JString,
-) -> jobject {
-    let rootfs: String = match env.get_string(&rootfs) {
-        Ok(s) => s.into(),
-        Err(e) => {
-            log::error!("nativeLauncherScan: bad rootfs string: {}", e);
-            return std::ptr::null_mut();
-        }
-    };
-    let json = launcher::scan_json(std::path::Path::new(&rootfs));
-    match env.new_string(json) {
-        Ok(s) => s.into_raw(),
-        Err(e) => {
-            log::error!("nativeLauncherScan: new_string failed: {}", e);
-            std::ptr::null_mut()
-        }
-    }
-}
-
-/// Resolve one `Icon=` value against a rootfs, as the launcher scan
-/// would: a PNG path, or empty. Pure file I/O; call off the UI thread.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeResolveIcon(
-    mut env: JNIEnv,
-    _class: JClass,
-    rootfs: JString,
-    value: JString,
-) -> jobject {
-    let (rootfs, value): (String, String) = match (env.get_string(&rootfs), env.get_string(&value)) {
-        (Ok(r), Ok(v)) => (r.into(), v.into()),
-        _ => {
-            log::error!("nativeResolveIcon: bad string argument");
-            return std::ptr::null_mut();
-        }
-    };
-    let path = launcher::resolve_icon(std::path::Path::new(&rootfs), &value);
-    match env.new_string(path) {
-        Ok(s) => s.into_raw(),
-        Err(e) => {
-            log::error!("nativeResolveIcon: new_string failed: {}", e);
-            std::ptr::null_mut()
-        }
-    }
-}
-
-/// Every icon name in a rootfs as a JSON array of `{name, user}`
-/// (`launcher::list_icons_json`). Pure file I/O; call off the UI thread.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeListIcons(
-    mut env: JNIEnv,
-    _class: JClass,
-    rootfs: JString,
-) -> jobject {
-    let rootfs: String = match env.get_string(&rootfs) {
-        Ok(s) => s.into(),
-        Err(e) => {
-            log::error!("nativeListIcons: bad rootfs string: {}", e);
-            return std::ptr::null_mut();
-        }
-    };
-    let json = launcher::list_icons_json(std::path::Path::new(&rootfs));
-    match env.new_string(json) {
-        Ok(s) => s.into_raw(),
-        Err(e) => {
-            log::error!("nativeListIcons: new_string failed: {}", e);
-            std::ptr::null_mut()
-        }
-    }
-}
-
-/// Rasterize an SVG file to a `px`² PNG (`icon_cache::rasterize_file`),
-/// for icons imported into the launcher store. File I/O and a render;
-/// call off the UI thread.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_me_phie_tawc_compositor_NativeBridge_nativeRasterizeIcon(
-    mut env: JNIEnv,
-    _class: JClass,
-    src: JString,
-    dst: JString,
-    px: jint,
-) -> jboolean {
-    let (src, dst): (String, String) = match (env.get_string(&src), env.get_string(&dst)) {
-        (Ok(s), Ok(d)) => (s.into(), d.into()),
-        _ => {
-            log::error!("nativeRasterizeIcon: bad string argument");
-            return 0;
-        }
-    };
-    let ok = px > 0
-        && icon_cache::rasterize_file(std::path::Path::new(&src), std::path::Path::new(&dst), px as u32);
-    jboolean::from(ok)
-}
-
-// ---------------------------------------------------------------------------
 // Reverse JNI: Compositor → Android
 // ---------------------------------------------------------------------------
 
@@ -1363,15 +1199,6 @@ pub fn fetch_android_clipboard_text() -> Option<String> {
     .flatten()
 }
 
-/// Reverse-JNI: `tty_nr` of the terminal tab the user is looking at, 0
-/// for none (see [`clipboard::allow_data_control_read`]).
-pub fn focused_terminal_tty() -> i32 {
-    with_native_bridge_result("focusedTerminalTty", |env, class| {
-        env.call_static_method(class, "focusedTerminalTty", "()I", &[])?.i()
-    })
-    .unwrap_or(0)
-}
-
 /// Reverse-JNI: push compositor/Wayland-owned text into Android's real
 /// ClipboardManager. Kotlin's announce path tags the write with TAWC's
 /// own clip label so the resulting clipboard-changed announce doesn't
@@ -1408,16 +1235,11 @@ pub fn spawn_activity_from_native(activity_id: &str) {
     });
 }
 
-/// Reverse-JNI: a root window was assigned to the reserved launch host.
-pub fn launch_matched_from_native(launch_id: &str) {
-    call_native_bridge_string("onLaunchMatched", launch_id);
-}
+/// Launch-splash callbacks. External-only builds have no launcher splash;
+/// the hooks stay no-ops so the native launch bookkeeping still compiles.
+pub fn launch_matched_from_native(_launch_id: &str) {}
 
-/// Reverse-JNI: the matched launch host rendered its window; the splash
-/// can go.
-pub fn launch_shown_from_native(launch_id: &str) {
-    call_native_bridge_string("onLaunchShown", launch_id);
-}
+pub fn launch_shown_from_native(_launch_id: &str) {}
 
 /// Reverse-JNI: bring an existing window's task to the front
 /// (xdg-activation).

@@ -7,7 +7,6 @@ pub struct AppPaths {
     pub data_dir: String,
     pub files_dir: String,
     pub share_dir: String,
-    pub distros_dir: String,
     pub xwayland_dir: String,
     pub xwayland_runtime_dir: String,
     pub xkb_config_root: String,
@@ -22,9 +21,10 @@ pub fn init_from_env() {
         data_dir: require_env("TAWC_APP_DATA_DIR"),
         files_dir: require_env("TAWC_APP_FILES_DIR"),
         share_dir: require_env("TAWC_APP_SHARE_DIR"),
-        distros_dir: require_env("TAWC_DISTROS_DIR"),
-        xwayland_dir: require_env("TAWC_XWAYLAND_DIR"),
-        xwayland_runtime_dir: require_env("TAWC_XWAYLAND_RUNTIME_DIR"),
+        // External-only builds do not ship Xwayland. Keep the fields for
+        // the Xwayland code path, which is inert when they are empty.
+        xwayland_dir: std::env::var("TAWC_XWAYLAND_DIR").unwrap_or_default(),
+        xwayland_runtime_dir: std::env::var("TAWC_XWAYLAND_RUNTIME_DIR").unwrap_or_default(),
         xkb_config_root: require_env("TAWC_XKB_CONFIG_ROOT"),
         wayland_socket_path: format!("{}/wayland-0", require_env("TAWC_APP_SHARE_DIR")),
         kumquat_socket_path: format!("{}/kumquat-gpu-0", require_env("TAWC_APP_SHARE_DIR")),

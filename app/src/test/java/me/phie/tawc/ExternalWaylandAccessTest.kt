@@ -29,14 +29,6 @@ class ExternalWaylandAccessTest {
     }
 
     @Test
-    fun disabledRejectsEveryoneElse() {
-        assertFalse(decide(10549, listOf("com.termux"), ExternalAccessMode.DISABLED).allowed)
-        assertFalse(
-            decide(10549, listOf("com.termux"), ExternalAccessMode.DISABLED, setOf("com.termux")).allowed
-        )
-    }
-
-    @Test
     fun anyAcceptsAnyResolvablePackage() {
         assertTrue(decide(10549, listOf("com.termux"), ExternalAccessMode.ANY).allowed)
         assertTrue(decide(10234, listOf("org.example.app"), ExternalAccessMode.ANY).allowed)

@@ -32,9 +32,6 @@ object ExternalWaylandAccess {
         if (callerUid == ownUid) return Decision(true, "own uid")
 
         return when (mode) {
-            ExternalAccessMode.DISABLED ->
-                Decision(false, "external access is disabled")
-
             ExternalAccessMode.ANY ->
                 if (callerPackages.isEmpty()) {
                     // Every real caller has at least one package; an empty

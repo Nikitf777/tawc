@@ -8,8 +8,6 @@ import android.os.Parcel
 import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.util.Log
-import me.phie.tawc.ExternalAccessMode
-import me.phie.tawc.Settings
 
 /**
  * Exported fd source for Wayland clients outside TAWC's uid.
@@ -68,10 +66,6 @@ class ExternalWaylandService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // Nothing below is needed for a caller that will be refused, and a
-        // disabled policy means there can be none.
-        if (Settings.externalAccessMode == ExternalAccessMode.DISABLED) return
-
         // Sets the TAWC_* env, caches the app context for the reverse-JNI
         // onActivationRequested callback, and starts the socket holder.
         // Idempotent; must precede the first openClient().

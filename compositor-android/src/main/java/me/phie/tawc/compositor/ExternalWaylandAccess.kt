@@ -1,7 +1,5 @@
 package me.phie.tawc.compositor
 
-import me.phie.tawc.ExternalAccessMode
-import me.phie.tawc.Settings
 
 /**
  * Access policy for [ExternalWaylandService], split out from the service

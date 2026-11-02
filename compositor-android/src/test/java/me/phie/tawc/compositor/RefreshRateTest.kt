@@ -1,4 +1,4 @@
-package me.phie.tawc
+package me.phie.tawc.compositor
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull

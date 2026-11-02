@@ -1,4 +1,4 @@
-package me.phie.tawc.session
+package me.phie.tawc.compositor.session
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

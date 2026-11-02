@@ -66,6 +66,7 @@ class ExternalWaylandService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        CompositorRuntime.initialize(this)
         // Sets the TAWC_* env, caches the app context for the reverse-JNI
         // onActivationRequested callback, and starts the socket holder.
         // Idempotent; must precede the first openClient().

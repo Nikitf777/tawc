@@ -1,4 +1,4 @@
-package me.phie.tawc.session
+package me.phie.tawc.compositor.session
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -19,8 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import me.phie.tawc.MainActivity
-import me.phie.tawc.R
+import me.phie.tawc.compositor.R
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -82,16 +81,17 @@ class SessionService : Service() {
             ?.notify(NOTIFICATION_ID, buildNotification())
     }
 
-    private fun buildNotification(): Notification =
-        Notification.Builder(this, CHANNEL_ID)
+    private fun buildNotification(): Notification {
+        val builder = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.session_notification_title))
             .setContentText(describe(SessionSummary.of(SessionHolds.reasons.value)))
-            .setSmallIcon(R.drawable.ic_tawc_logo)
-            .setContentIntent(homePendingIntent())
+            .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_SERVICE)
-            .build()
+        homePendingIntent()?.let(builder::setContentIntent)
+        return builder.build()
+    }
 
     private fun describe(s: SessionSummary): String =
         if (s.windows > 0) {
@@ -100,14 +100,14 @@ class SessionService : Service() {
             getString(R.string.session_display_server)
         }
 
-    private fun homePendingIntent(): PendingIntent {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            action = Intent.ACTION_MAIN
-            addCategory(Intent.CATEGORY_LAUNCHER)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+    /** Open the host app, if it has a launcher activity. */
+    private fun homePendingIntent(): PendingIntent? {
+        val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return null
+        intent.addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
+                Intent.FLAG_ACTIVITY_SINGLE_TOP,
+        )
         return PendingIntent.getActivity(
             this, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,

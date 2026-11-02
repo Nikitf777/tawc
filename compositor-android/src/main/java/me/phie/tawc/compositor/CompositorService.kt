@@ -17,10 +17,9 @@ import android.system.Os
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
-import me.phie.tawc.AppPaths
-import me.phie.tawc.session.Hold
-import me.phie.tawc.session.Reason
-import me.phie.tawc.session.SessionHolds
+import me.phie.tawc.compositor.session.Hold
+import me.phie.tawc.compositor.session.Reason
+import me.phie.tawc.compositor.session.SessionHolds
 import java.io.File
 import java.lang.ref.WeakReference
 import kotlinx.coroutines.flow.StateFlow
@@ -67,6 +66,7 @@ class CompositorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        CompositorRuntime.initialize(this)
         // Hand the application context + service to NativeBridge so its
         // reverse-JNI spawnActivity/finishActivity entry points work even
         // when no Activity is currently in the foreground.
@@ -79,12 +79,12 @@ class CompositorService : Service() {
 
         val displayMetrics = realDisplayMetrics()
         val started = NativeBridge.nativeStartCompositor(
-            me.phie.tawc.Settings.outputScale,
+            Settings.outputScale,
             displayMetrics.widthPixels,
             displayMetrics.heightPixels,
             false,
-            me.phie.tawc.Settings.pointerEmulation.ordinal,
-            me.phie.tawc.Settings.serverRenderer.ordinal,
+            Settings.pointerEmulation.ordinal,
+            Settings.serverRenderer.ordinal,
         )
         if (!started) return
         // Everything below is per compositor run.
@@ -95,14 +95,14 @@ class CompositorService : Service() {
         // only strictly needed when the user has flipped a toggle, but
         // pushing unconditionally keeps the two sides in sync after a
         // process restart with no extra control flow.
-        NativeBridge.nativeSetTintBuffersByType(me.phie.tawc.Settings.tintBuffersByType)
-        NativeBridge.nativeSetOutputScale(me.phie.tawc.Settings.outputScale)
+        NativeBridge.nativeSetTintBuffersByType(Settings.tintBuffersByType)
+        NativeBridge.nativeSetOutputScale(Settings.outputScale)
         // Resolved by an Activity (a service can't read display modes);
         // 0 means none has run yet.
-        me.phie.tawc.Settings.outputRefreshMhz
+        Settings.outputRefreshMhz
             .takeIf { it > 0 }
             ?.let { NativeBridge.nativeSetOutputRefreshRate(it) }
-        NativeBridge.nativeSetPointerEmulation(me.phie.tawc.Settings.pointerEmulation.ordinal)
+        NativeBridge.nativeSetPointerEmulation(Settings.pointerEmulation.ordinal)
         // A fresh watcher re-seeds mouse presence; a surviving one would
         // drop it as an unchanged value.
         mouseWatcher?.stop()

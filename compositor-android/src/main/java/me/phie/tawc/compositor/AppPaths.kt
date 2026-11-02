@@ -1,4 +1,4 @@
-package me.phie.tawc
+package me.phie.tawc.compositor
 
 import android.content.Context
 import java.io.File

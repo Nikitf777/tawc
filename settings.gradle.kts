@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "tawc"
 include(":app")
+include(":compositor-android")

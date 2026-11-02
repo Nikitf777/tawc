@@ -12,10 +12,10 @@ import android.widget.RadioGroup
 import android.widget.TextView
 import androidx.core.text.inSpans
 import me.phie.tawc.R
-import me.phie.tawc.ServerRenderer
+import me.phie.tawc.compositor.ServerRenderer
 
 /**
- * Compositor renderer picker. Shown only when [me.phie.tawc.MesaServerSupport]
+ * Compositor renderer picker. Shown only when [me.phie.tawc.compositor.MesaServerSupport]
  * says the build/device can use Mesa; the caller hides the whole control
  * otherwise.
  */

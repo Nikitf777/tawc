@@ -1,6 +1,5 @@
-package me.phie.tawc
+package me.phie.tawc.compositor
 
-import me.phie.tawc.compositor.ExternalWaylandAccess
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

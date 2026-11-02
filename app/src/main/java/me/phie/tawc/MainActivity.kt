@@ -22,8 +22,12 @@ import androidx.core.app.ActivityCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.appbar.MaterialToolbar
+import me.phie.tawc.compositor.ExternalAccessMode
 import me.phie.tawc.compositor.ExternalWaylandAccess
+import me.phie.tawc.compositor.MesaServerSupport
 import me.phie.tawc.compositor.NativeBridge
+import me.phie.tawc.compositor.ServerRenderer
+import me.phie.tawc.compositor.Settings
 import me.phie.tawc.licenses.LicensesActivity
 import me.phie.tawc.ui.externalAccessGroup
 import me.phie.tawc.ui.pointerEmulationGroup

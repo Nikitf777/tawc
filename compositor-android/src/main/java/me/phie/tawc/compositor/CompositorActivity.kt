@@ -43,8 +43,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import me.phie.tawc.RefreshRate
-import me.phie.tawc.Settings
 import java.io.File
 
 /**
@@ -358,7 +356,7 @@ class CompositorActivity : Activity(), SurfaceHolder.Callback {
         if (!initialized || window.activityId != activityId) return
         val label = window.title.ifBlank {
             window.desktopName.ifBlank {
-                window.appId.ifBlank { getString(me.phie.tawc.R.string.app_name) }
+                window.appId.ifBlank { applicationInfo.loadLabel(packageManager).toString() }
             }
         }
         applyTaskDescription(label, window.iconPath)

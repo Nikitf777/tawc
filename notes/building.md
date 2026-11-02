@@ -28,6 +28,19 @@ hand, use the matching script under `scripts/` or `tawcroot/build.sh`.
 The result is `app/build/outputs/apk/debug/app-debug.apk`. Install
 and launch as documented in AGENTS.md's Common Commands.
 
+## Module layout
+
+- `:compositor-android` is an Android library containing the Rust compositor
+  JNI bridge, `CompositorActivity`/`CompositorService`, the external
+  Wayland service/AIDL, the compositor-only foreground service, the
+  compositor settings, and the xkb/Mesa/native artifacts.
+- `:app` is the TAWC host: the settings page, restart trampoline, licenses,
+  and the thin `TawcApplication`.
+- `compositor/` remains the Rust crate built into
+  `compositor-android/src/main/jniLibs/`.
+- Unit tests for compositor settings/access live in
+  `compositor-android`; run `./gradlew :compositor-android:testDebugUnitTest`.
+
 ## Host packages
 
 ### Always required
@@ -526,7 +539,7 @@ Bionic-built (NDK), not glibc — see `notes/xwayland.md` "Why bionic"
 for the rationale and the "Glibc alternative" section for the V4
 toolchain swap that we tried and reverted.
 
-### Rust compositor (.so → bundled in APK by Gradle)
+### Rust compositor (.so → bundled in :compositor-android by Gradle)
 
 NDK clang against bionic, via `cargo-ndk`. Invoked by Gradle
 automatically; no separate command needed.

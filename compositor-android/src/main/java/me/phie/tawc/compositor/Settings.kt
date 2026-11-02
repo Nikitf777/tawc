@@ -1,4 +1,4 @@
-package me.phie.tawc
+package me.phie.tawc.compositor
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -7,7 +7,7 @@ import androidx.core.content.edit
 
 /**
  * Process-global settings facade, initialised once from
- * [TawcApplication.onCreate] so non-Activity code can read settings
+ * [CompositorRuntime.initialize] so non-Activity code can read settings
  * without threading a Context through every call site.
  */
 object Settings {
@@ -102,7 +102,7 @@ object Settings {
     /** Renderer selected when this process started, for [serverRendererChangedSinceStart]. */
     @Volatile private var startupServerRenderer: ServerRenderer? = null
 
-    /** Called from [TawcApplication.onCreate]. Idempotent. */
+    /** Called from [CompositorRuntime.initialize]. Idempotent. */
     fun init(context: Context) {
         if (store == null) {
             store = SharedPreferencesStore(
@@ -114,7 +114,7 @@ object Settings {
     }
 
     private fun requireStore(): Store =
-        store ?: error("Settings.init(context) was not called — see TawcApplication.onCreate")
+        store ?: error("Settings.init(context) was not called — see CompositorRuntime.initialize")
 
     /**
      * Which renderer the compositor uses. Read when the compositor starts.

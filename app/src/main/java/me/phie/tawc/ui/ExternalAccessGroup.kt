@@ -9,7 +9,7 @@ import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import androidx.core.text.inSpans
-import me.phie.tawc.ExternalAccessMode
+import me.phie.tawc.compositor.ExternalAccessMode
 import me.phie.tawc.R
 
 /**

@@ -1,4 +1,4 @@
-package me.phie.tawc
+package me.phie.tawc.compositor
 
 import android.os.Build
 import android.system.Os

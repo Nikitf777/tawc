@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="session_channel_name">Compositor</string>
+    <string name="session_channel_description">Shown while the Wayland compositor is running.</string>
+    <string name="session_notification_title">TAWC compositor</string>
+    <string name="session_display_server">Display server running</string>
+    <plurals name="session_windows">
+        <item quantity="one">%1$d window</item>
+        <item quantity="other">%1$d windows</item>
+    </plurals>
+</resources>

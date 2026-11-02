@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-feature android:glEsVersion="0x00020000" android:required="true" />
+
+    <!-- SessionService keeps the process in the foreground while the
+         compositor runs; specialUse is the correct foregroundServiceType
+         on Android 14+ (none of the standard types fit). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- ExternalWaylandService identifies its caller by uid and package
+         name. Package visibility filtering otherwise hides com.termux from
+         getPackagesForUid on Android 11+. -->
+    <queries>
+        <package android:name="com.termux" />
+        <!-- Debug-only fallback so the helper can run from `adb shell`. -->
+        <package android:name="com.android.shell" />
+        <!-- The external apps allowlist dialog lists launchable apps
+             without QUERY_ALL_PACKAGES. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <application>
+        <!-- One Android document/task per Wayland window. -->
+        <activity
+            android:name=".CompositorActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Tawc.Compositor"
+            android:documentLaunchMode="intoExisting"
+            android:taskAffinity=""
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="stateHidden|adjustResize" />
+
+        <service
+            android:name=".CompositorService"
+            android:exported="false" />
+
+        <!-- Exported fd source for out-of-uid Wayland clients. Access is
+             gated in ExternalWaylandService.callerAllowed, not by a
+             permission: the app_process caller has no manifest. -->
+        <service
+            android:name=".ExternalWaylandService"
+            android:exported="true" />
+
+        <service
+            android:name=".session.SessionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="wayland_compositor" />
+        </service>
+    </application>
+
+</manifest>

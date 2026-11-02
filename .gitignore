@@ -21,7 +21,7 @@ app/src/main/assets/xwayland/
 app/src/main/assets/mesa-gfxstream/
 
 # server Mesa/Turnip asset (built by buildMesaServer<Abi>)
-app/src/main/assets/mesa-server/
+**/assets/mesa-server/
 
 # mesa-zink asset (built by the buildMesaGfxstream Gradle task,
 # packed by packMesaZink — see notes/libhybris-zink.md)
